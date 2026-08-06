@@ -563,7 +563,7 @@
           </thead>
           <tbody></tbody>
         </table>
-        <div class="empty" id="glEmpty">Upload GL report Excel/CSV or use demo seed, then select a Cadency Account or CC.</div>
+        <div class="empty" id="glEmpty">Upload GL report (.xlsx/.csv). Rows appear here; click a Cadency Account or CC to filter &amp; verify.</div>
       </div>
     </aside>
   </div>
@@ -955,8 +955,8 @@ function renderGL() {
   if (!visibleIds.length) {
     empty.hidden = false;
     empty.textContent = activeRowIndex == null
-      ? "Select a Cadency Account or CC."
-      : "No rows match filters.";
+      ? "Upload a GL report, or select a Cadency Account / CC to filter."
+      : "No GL report rows match these filters. Check Account↔NOMINAL, CC↔COST_CENTRE, Currency, and date window.";
   } else {
     empty.hidden = true;
   }
@@ -1246,12 +1246,12 @@ function parseCSVMatrix(text) {
 }
 
 const IMAGE_ALIASES = {
-  Effective_Date: ["Effective Date", "Effective_Date", "As_Of_Date", "As Of Date", "Date"],
+  Effective_Date: ["Effective Date", "Effective_Date", "As_Of_Date", "As Of Date"],
   Account: ["Account", "NOMINAL", "Account_No", "Account Number"],
   CC: ["CC", "Cost_Center", "Cost Center", "COST_CENTRE", "COST_CENTER"],
   Currency: ["Transaction Currency (CCY2) Code", "Transaction Currency CCY2 Code", "Transaction Currency", "CCY2", "TXN_CURRENCY", "Currency"],
-  Amount: ["G/L Ending Balance", "G L Ending Balance", "GL Ending Balance", "Ending Balance", "Amount", "FUNCTIONAL_AMOUNT"],
-  Check_Result: ["Result", "Check_Result", "Check Result", "Completed"],
+  Amount: ["G/L Ending Balance", "G L Ending Balance", "GL Ending Balance", "Ending Balance", "FUNCTIONAL_AMOUNT", "Amount"],
+  Check_Result: ["Check_Result", "Check Result", "Result"],
 };
 
 function parseImageDataTable(matrix) {
@@ -1287,7 +1287,7 @@ function parseImageDataTable(matrix) {
 }
 
 const IMPORT_ALIASES = {
-  POSTED_DATE: ["POSTED_DATE", "Posted Date", "Posting_Date", "Posting Date", "GL_DATE", "ACCOUNTING_DATE"],
+  POSTED_DATE: ["POSTED_DATE", "Posted Date", "Posting_Date", "Posting Date"],
   NOMINAL: ["NOMINAL", "Account", "Account_No", "Account Number"],
   COST_CENTRE: ["COST_CENTRE", "COST_CENTER", "Cost_Center", "Cost Center", "CC"],
   TXN_CURRENCY: ["TXN_CURRENCY", "Transaction Currency", "Currency", "CCY"],
@@ -1296,22 +1296,41 @@ const IMPORT_ALIASES = {
   LEGAL_ENTITY: ["LEGAL_ENTITY", "Legal Entity", "BU"],
 };
 
-function parseImportMatrix(matrix, sheetName) {
-  // find header row (first non-empty with enough aliases)
-  let headerRowIdx = 0;
-  let headers = matrix[0] || [];
-  for (let r = 0; r < Math.min(matrix.length, 20); r++) {
+function scoreImportHeaders(headers) {
+  const h = (headers || []).map(x => String(x ?? "").trim());
+  let score = 0;
+  // Prefer real GL report column names over legacy mock headers.
+  if (pickCol(h, ["POSTED_DATE", "Posted Date"]) >= 0) score += 5;
+  else if (pickCol(h, ["Posting_Date", "Posting Date"]) >= 0) score += 2;
+  if (pickCol(h, ["NOMINAL"]) >= 0) score += 5;
+  else if (pickCol(h, ["Account", "Account_No", "Account Number"]) >= 0) score += 2;
+  if (pickCol(h, ["COST_CENTRE", "COST_CENTER"]) >= 0) score += 5;
+  else if (pickCol(h, ["Cost_Center", "Cost Center", "CC"]) >= 0) score += 2;
+  if (pickCol(h, ["FUNCTIONAL_AMOUNT", "Functional Amount"]) >= 0) score += 5;
+  else if (pickCol(h, ["Amount", "TXN_AMT"]) >= 0) score += 2;
+  if (pickCol(h, ["TXN_CURRENCY"]) >= 0) score += 3;
+  return score;
+}
+
+function findImportHeaderRow(matrix) {
+  let best = { idx: 0, score: -1, headers: matrix[0] || [] };
+  for (let r = 0; r < Math.min(matrix.length, 30); r++) {
     const h = (matrix[r] || []).map(x => String(x ?? "").trim());
-    const di = pickCol(h, IMPORT_ALIASES.POSTED_DATE);
-    const ai = pickCol(h, IMPORT_ALIASES.NOMINAL);
-    const ci = pickCol(h, IMPORT_ALIASES.COST_CENTRE);
-    const mi = pickCol(h, IMPORT_ALIASES.FUNCTIONAL_AMOUNT);
-    if (di >= 0 && ai >= 0 && ci >= 0 && mi >= 0) {
-      headerRowIdx = r;
-      headers = h;
-      break;
-    }
+    const score = scoreImportHeaders(h);
+    const hasCore =
+      pickCol(h, IMPORT_ALIASES.POSTED_DATE) >= 0 &&
+      pickCol(h, IMPORT_ALIASES.NOMINAL) >= 0 &&
+      pickCol(h, IMPORT_ALIASES.COST_CENTRE) >= 0 &&
+      pickCol(h, IMPORT_ALIASES.FUNCTIONAL_AMOUNT) >= 0;
+    if (hasCore && score > best.score) best = { idx: r, score, headers: h };
   }
+  return best;
+}
+
+function parseImportMatrix(matrix, sheetName) {
+  const found = findImportHeaderRow(matrix);
+  const headerRowIdx = found.idx;
+  const headers = found.headers;
 
   const di = pickCol(headers, IMPORT_ALIASES.POSTED_DATE);
   const ai = pickCol(headers, IMPORT_ALIASES.NOMINAL);
@@ -1323,8 +1342,9 @@ function parseImportMatrix(matrix, sheetName) {
 
   if (di < 0 || ai < 0 || ci < 0 || mi < 0) {
     throw new Error(
-      "Import file missing required columns (POSTED_DATE, NOMINAL, COST_CENTRE, FUNCTIONAL_AMOUNT)." +
-      (sheetName ? ` Sheet: ${sheetName}` : "")
+      "GL report missing required columns (POSTED_DATE, NOMINAL, COST_CENTRE, FUNCTIONAL_AMOUNT)." +
+      (sheetName ? ` Sheet: ${sheetName}` : "") +
+      "\nTip: use the Cadency/GL report sample columns, not the old Account/Cost_Center mock file."
     );
   }
 
@@ -1345,31 +1365,54 @@ function parseImportMatrix(matrix, sheetName) {
       _id: nextGlId++,
     });
   }
-  return { sheetName: sheetName || "CSV", rows: out };
+  if (!out.length) {
+    throw new Error(
+      "GL report had headers but no usable data rows (check POSTED_DATE values)." +
+      (sheetName ? ` Sheet: ${sheetName}` : "")
+    );
+  }
+  return { sheetName: sheetName || "CSV", rows: out, headerScore: found.score };
 }
 
 function parseImportWorkbook(ab) {
   if (typeof XLSX === "undefined") {
-    throw new Error("SheetJS failed to load (CDN). Open while online, or host xlsx.full.min.js locally.");
+    throw new Error("SheetJS failed to load (CDN). Open while online, or host xlsx.full.min.js locally. CSV upload works offline.");
   }
   const wb = XLSX.read(ab, { type: "array", cellDates: true });
-  const preferred = ["GL Detail", "Import", "Sheet1"];
-  let sheetName = preferred.find(n => wb.SheetNames.includes(n)) || null;
+  const preferredOrder = ["GL report", "GL Report", "Import", "GL Detail", "Sheet1"];
+  let best = null;
 
-  if (!sheetName) {
-    for (const name of wb.SheetNames) {
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" });
-      if (!rows.length) continue;
-      try {
-        const parsed = parseImportMatrix(rows, name);
-        if (parsed.rows.length) return parsed;
-      } catch (_) { /* try next */ }
-    }
-    sheetName = wb.SheetNames[0];
+  const names = [
+    ...preferredOrder.filter(n => wb.SheetNames.includes(n)),
+    ...wb.SheetNames.filter(n => !preferredOrder.includes(n)),
+  ];
+
+  for (const name of names) {
+    const matrix = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "", raw: true });
+    if (!matrix.length) continue;
+    try {
+      const parsed = parseImportMatrix(matrix, name);
+      if (!best || (parsed.headerScore || 0) > (best.headerScore || 0) ||
+          ((parsed.headerScore || 0) === (best.headerScore || 0) && parsed.rows.length > best.rows.length)) {
+        best = parsed;
+      }
+      // Strong match on real GL report headers — take it immediately.
+      if ((parsed.headerScore || 0) >= 18) return parsed;
+    } catch (_) { /* try next sheet */ }
   }
 
-  const matrix = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: "", raw: true });
-  return parseImportMatrix(matrix, sheetName);
+  if (best) return best;
+  throw new Error(
+    "Could not find a GL report sheet with POSTED_DATE / NOMINAL / COST_CENTRE / FUNCTIONAL_AMOUNT. " +
+    `Sheets: ${wb.SheetNames.join(", ")}`
+  );
+}
+
+function showAllGlRows() {
+  visibleIds = glRows.map(r => r._id);
+  selectedIds = new Set();
+  renderGL();
+  updateCompare();
 }
 
 function exportCSV() {
@@ -1543,19 +1586,29 @@ document.getElementById("importInput").addEventListener("change", async (e) => {
     if (name.endsWith(".csv") || file.type === "text/csv" || file.type === "text/plain") {
       const text = await file.text();
       parsed = parseImportMatrix(parseCSVMatrix(text), file.name);
-    } else {
+    } else if (name.endsWith(".xlsx") || name.endsWith(".xls") || /sheet|excel/i.test(file.type || "")) {
       const ab = await file.arrayBuffer();
       parsed = parseImportWorkbook(ab);
+    } else {
+      // Filename may omit extension; try CSV text first, then xlsx.
+      try {
+        const text = await file.text();
+        parsed = parseImportMatrix(parseCSVMatrix(text), file.name);
+      } catch (_) {
+        const ab = await file.arrayBuffer();
+        parsed = parseImportWorkbook(ab);
+      }
     }
-    glRows = parsed.rows;
-    nextGlId = glRows.reduce((m, r) => Math.max(m, r._id + 1), 0);
+    nextGlId = 0;
+    glRows = parsed.rows.map((r, i) => ({ ...r, _id: i }));
+    nextGlId = glRows.length;
     selectedIds = new Set();
     setLoadStatus(`GL report loaded: ${file.name} / ${parsed.sheetName} (${glRows.length} rows)`);
     if (activeRowIndex != null) applyFilters();
     else {
-      visibleIds = [];
-      renderGL();
-      updateCompare();
+      document.getElementById("reviewTarget").textContent =
+        `GL report loaded (${glRows.length} rows). Click a Cadency Account or CC to filter & verify.`;
+      showAllGlRows();
     }
   } catch (err) {
     alert(err.message || String(err));
@@ -1566,8 +1619,7 @@ document.getElementById("importInput").addEventListener("change", async (e) => {
 /* ========== Init ========== */
 initSplitter();
 renderDataTable();
-visibleIds = [];
-renderGL();
+showAllGlRows();
 updateCompare();
 </script>
 </body>
