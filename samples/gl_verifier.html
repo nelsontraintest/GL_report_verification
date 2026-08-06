@@ -1,10 +1,10 @@
 <!--
-  GL vs Image Data-Table Verification Tool
+  Cadency vs GL report Verification Tool
   Dependencies (CDN):
     - SheetJS: https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
     - Tesseract.js OCR: https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js
 
-  Column mapping (image data table → import excel):
+  Column mapping (Cadency → GL report):
     CC                              → COST_CENTRE   (smart digit/suffix match)
     Account                         → NOMINAL
     Effective Date                  → POSTED_DATE   (MTD through period end)
@@ -16,7 +16,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>GL vs Data-Table Verification</title>
+<title>Cadency vs GL report Verification</title>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
@@ -426,17 +426,17 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>GL vs Data-Table Verification</h1>
+    <h1>Cadency vs GL report Verification</h1>
     <div class="help">
       Effective Date = MTD through period end (e.g. 06-30-2026 ⇒ POSTED_DATE 06-01…06-30).
       Click Account or CC, select import rows, compare sum of FUNCTIONAL_AMOUNT to G/L Ending Balance.
       Currency and smart Cost Centre matching are included.
     </div>
     <div class="actions">
-      <label class="file-btn">Data table image / CSV
+      <label class="file-btn">Cadency image / CSV
         <input type="file" id="imageDataInput" accept=".csv,text/csv,text/plain,image/*,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" />
       </label>
-      <label class="file-btn">Import Excel (.xlsx / CSV)
+      <label class="file-btn">GL report (.xlsx / CSV)
         <input type="file" id="importInput" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
       </label>
       <button type="button" id="btnExport" class="primary">Export results CSV</button>
@@ -457,11 +457,11 @@
     <main class="main">
       <div class="panel-card">
         <div class="panel-head">
-          <h2>Image data table</h2>
+          <h2>Cadency</h2>
           <button type="button" id="btnEditToggle">Edit table</button>
         </div>
         <div class="image-preview" id="imagePreview">
-          <img id="imagePreviewImg" alt="Uploaded data table image preview" />
+          <img id="imagePreviewImg" alt="Uploaded Cadency image preview" />
           <div class="meta" id="imagePreviewMeta"></div>
         </div>
         <div class="ocr-progress" id="ocrProgress">
@@ -511,8 +511,8 @@
     <aside class="drawer" id="drawer" aria-label="Import filter panel">
       <div class="drawer-head">
         <div>
-          <h2>Import filter &amp; compare</h2>
-          <div class="sub" id="reviewTarget">Select a data-table Account or CC.</div>
+          <h2>GL report filter &amp; compare</h2>
+          <div class="sub" id="reviewTarget">Select a Cadency Account or CC.</div>
         </div>
         <button type="button" id="btnCloseDrawer" class="ghost" aria-label="Close panel">Close</button>
       </div>
@@ -563,7 +563,7 @@
           </thead>
           <tbody></tbody>
         </table>
-        <div class="empty" id="glEmpty">Upload Import Excel/CSV or use demo seed, then select a data-table Account or CC.</div>
+        <div class="empty" id="glEmpty">Upload GL report Excel/CSV or use demo seed, then select a Cadency Account or CC.</div>
       </div>
     </aside>
   </div>
@@ -754,7 +754,7 @@ function deleteDataRow(idx) {
     activeRowIndex = null;
     selectedIds = new Set();
     visibleIds = [];
-    document.getElementById("reviewTarget").textContent = "Select a data-table Account or CC.";
+    document.getElementById("reviewTarget").textContent = "Select a Cadency Account or CC.";
   } else if (activeRowIndex != null && activeRowIndex > idx) {
     activeRowIndex -= 1;
   }
@@ -947,7 +947,7 @@ function renderGL() {
 
   if (!glRows.length) {
     empty.hidden = false;
-    empty.textContent = "Upload Import Excel (.xlsx) or CSV.";
+    empty.textContent = "Upload GL report (.xlsx) or CSV.";
     document.getElementById("glCounts").textContent = "0 visible · 0 selected";
     document.getElementById("chkAll").checked = false;
     return;
@@ -955,7 +955,7 @@ function renderGL() {
   if (!visibleIds.length) {
     empty.hidden = false;
     empty.textContent = activeRowIndex == null
-      ? "Select a data-table Account or CC."
+      ? "Select a Cadency Account or CC."
       : "No rows match filters.";
   } else {
     empty.hidden = true;
@@ -1263,7 +1263,7 @@ function parseImageDataTable(matrix) {
   const missing = ["Effective_Date", "Account", "CC", "Amount"].filter(k => map[k] < 0);
   if (missing.length) {
     throw new Error(
-      "Image data table CSV missing required columns: " +
+      "Cadency CSV missing required columns: " +
       missing.join(", ") +
       "\nExpected headers like: Effective Date, Account, CC, Transaction Currency (CCY2) Code, G/L Ending Balance"
     );
@@ -1282,7 +1282,7 @@ function parseImageDataTable(matrix) {
       Check_Result: map.Check_Result >= 0 ? String(cols[map.Check_Result] || "").trim() : "",
     });
   }
-  if (!rows.length) throw new Error("No data rows found in image data table CSV");
+  if (!rows.length) throw new Error("No data rows found in Cadency CSV");
   return rows;
 }
 
@@ -1395,7 +1395,7 @@ function exportCSV() {
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "data_table_checked.csv";
+  a.download = "cadency_checked.csv";
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -1550,7 +1550,7 @@ document.getElementById("importInput").addEventListener("change", async (e) => {
     glRows = parsed.rows;
     nextGlId = glRows.reduce((m, r) => Math.max(m, r._id + 1), 0);
     selectedIds = new Set();
-    setLoadStatus(`Import loaded: ${file.name} / ${parsed.sheetName} (${glRows.length} rows)`);
+    setLoadStatus(`GL report loaded: ${file.name} / ${parsed.sheetName} (${glRows.length} rows)`);
     if (activeRowIndex != null) applyFilters();
     else {
       visibleIds = [];
