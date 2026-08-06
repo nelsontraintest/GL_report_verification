@@ -1,7 +1,15 @@
 <!--
-  GL vs Data-Table Verification Tool (MOCK sample)
-  Dependency: SheetJS (xlsx) via CDN for .xlsx upload parsing
-  https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
+  GL vs Image Data-Table Verification Tool
+  Dependencies (CDN):
+    - SheetJS: https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js
+    - Tesseract.js OCR: https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js
+
+  Column mapping (image data table → import excel):
+    CC                              → COST_CENTRE   (smart digit/suffix match)
+    Account                         → NOMINAL
+    Effective Date                  → POSTED_DATE   (MTD through period end)
+    G/L Ending Balance              → FUNCTIONAL_AMOUNT
+    Transaction Currency (CCY2) Code→ TXN_CURRENCY
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -10,6 +18,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GL vs Data-Table Verification</title>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   :root {
     --bg: #f3f5f7;
@@ -27,7 +36,8 @@
     --mismatch-bg: #fde8e7;
     --pending: #6b7280;
     --focus: #2563eb;
-    --drawer-w: min(520px, 100%);
+    --drawer-w: 560px;
+    --splitter-w: 6px;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
@@ -78,7 +88,7 @@
   }
   .topbar .help {
     color: var(--muted);
-    flex: 1 1 220px;
+    flex: 1 1 240px;
     min-width: 200px;
     line-height: 1.35;
   }
@@ -100,19 +110,65 @@
     padding: 4px 8px;
     border: 1px dashed var(--line);
     border-radius: 4px;
+    max-width: 360px;
+  }
+  .map-note {
+    width: 100%;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.4;
   }
   .workspace {
     flex: 1;
     display: grid;
-    grid-template-columns: 1fr var(--drawer-w);
+    grid-template-columns: minmax(280px, 1fr) var(--splitter-w) var(--drawer-w);
     min-height: 0;
   }
-  .workspace.drawer-closed { grid-template-columns: 1fr 0fr; }
+  .workspace.drawer-closed {
+    grid-template-columns: 1fr 0 0;
+  }
+  .workspace.drawer-closed .splitter { display: none; }
   .main {
     min-width: 0;
     overflow: auto;
     padding: 14px;
   }
+  .splitter {
+    position: relative;
+    width: var(--splitter-w);
+    background: var(--line);
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+  }
+  .splitter::after {
+    content: "";
+    position: absolute;
+    inset: 0 -4px;
+  }
+  .splitter:hover,
+  .splitter:focus-visible,
+  .splitter.dragging {
+    background: var(--focus);
+  }
+  .splitter:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -1px;
+  }
+  .splitter .grip {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 28px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.85);
+    box-shadow: -2px 0 0 rgba(0,0,0,0.12), 2px 0 0 rgba(0,0,0,0.12);
+    pointer-events: none;
+  }
+  body.resizing-panels { cursor: col-resize; user-select: none; }
+  body.resizing-panels iframe { pointer-events: none; }
   .panel-card {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -239,7 +295,6 @@
   }
   .compare .metric .lbl { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
   .compare .metric .val { font-weight: 650; font-variant-numeric: tabular-nums; }
-  .compare .metric.status { grid-column: span 1; }
   .gl-tools {
     display: flex;
     flex-wrap: wrap;
@@ -266,15 +321,101 @@
   }
   table.data td input.edit {
     width: 100%;
+    min-width: 72px;
     border: 1px solid var(--line);
     border-radius: 3px;
     padding: 4px 6px;
   }
+  .cc-hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  button.row-del {
+    color: var(--mismatch);
+    border-color: #f0c4c2;
+    background: #fff;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  button.row-del:hover { background: var(--mismatch-bg); }
+  table.data th.actions, table.data td.actions {
+    width: 72px;
+    text-align: center;
+  }
+  .image-preview {
+    display: none;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    background: #f8fafc;
+  }
+  .image-preview.visible { display: flex; }
+  .image-preview img {
+    max-width: 220px;
+    max-height: 120px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    object-fit: contain;
+    background: #fff;
+  }
+  .image-preview .meta {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    line-height: 1.4;
+    font-size: 12px;
+  }
+  .image-preview .meta strong { color: var(--ink); }
+  .ocr-progress {
+    display: none;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    background: #eef6ff;
+    color: #174ea6;
+    font-size: 12px;
+  }
+  .ocr-progress.visible { display: block; }
+  .ocr-progress .bar {
+    margin-top: 6px;
+    height: 6px;
+    background: #d6e4ff;
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .ocr-progress .bar > span {
+    display: block;
+    height: 100%;
+    width: 0%;
+    background: var(--focus);
+    transition: width 0.15s linear;
+  }
+  details.ocr-raw {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  details.ocr-raw pre {
+    margin: 8px 0 0;
+    max-height: 140px;
+    overflow: auto;
+    white-space: pre-wrap;
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px;
+    color: var(--ink);
+  }
   @media (max-width: 960px) {
-    .workspace { grid-template-columns: 1fr; }
+    .workspace {
+      grid-template-columns: 1fr;
+    }
+    .splitter { display: none; }
     .workspace:not(.drawer-closed) .drawer {
       position: fixed;
-      inset: 0 0 0 0;
+      inset: 0;
       z-index: 20;
       width: 100%;
       max-width: none;
@@ -287,15 +428,28 @@
   <header class="topbar">
     <h1>GL vs Data-Table Verification</h1>
     <div class="help">
-      As_Of_Date means MTD through period end (e.g. 06-30-2026 ⇒ GL dates 06-01-2026…06-30-2026).
-      Click Account or Cost_Center, select GL rows, compare sum to Expected.
+      Effective Date = MTD through period end (e.g. 06-30-2026 ⇒ POSTED_DATE 06-01…06-30).
+      Click Account or CC, select import rows, compare sum of FUNCTIONAL_AMOUNT to G/L Ending Balance.
+      Currency and smart Cost Centre matching are included.
     </div>
     <div class="actions">
-      <label class="file-btn">CSV / table<input type="file" id="csvInput" accept=".csv,text/csv" /></label>
-      <label class="file-btn">GL Excel (.xlsx)<input type="file" id="xlsxInput" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" /></label>
-      <button type="button" id="btnExport" class="primary">Export CSV</button>
+      <label class="file-btn">Data table image / CSV
+        <input type="file" id="imageDataInput" accept=".csv,text/csv,text/plain,image/*,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" />
+      </label>
+      <label class="file-btn">Import Excel (.xlsx / CSV)
+        <input type="file" id="importInput" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+      </label>
+      <button type="button" id="btnExport" class="primary">Export results CSV</button>
       <button type="button" id="btnToggleDrawer" class="ghost">Toggle panel</button>
-      <span class="status-pill" id="loadStatus">Demo seed loaded</span>
+      <button type="button" id="btnResetSplit" class="ghost" title="Reset panel widths">Reset split</button>
+      <span class="status-pill" id="loadStatus">Demo seed loaded — upload your files anytime</span>
+    </div>
+    <div class="map-note">
+      Mapping: Account→NOMINAL · CC→COST_CENTRE · Effective Date→POSTED_DATE ·
+      G/L Ending Balance→FUNCTIONAL_AMOUNT · Transaction Currency (CCY2) Code→TXN_CURRENCY.
+      Cost Centre smart match example: HB00214402 ↔ 0100214402 (digit / suffix).
+      Drag the vertical separator to resize panels · double-click separator to reset.
+      Image OCR needs internet once (Tesseract.js CDN); always review/edit extracted rows before locking.
     </div>
   </header>
 
@@ -303,22 +457,37 @@
     <main class="main">
       <div class="panel-card">
         <div class="panel-head">
-          <h2>Data table — Account × Cost_Center totals</h2>
-          <button type="button" id="btnEditToggle">Edit extracted table</button>
+          <h2>Image data table</h2>
+          <button type="button" id="btnEditToggle">Edit table</button>
+        </div>
+        <div class="image-preview" id="imagePreview">
+          <img id="imagePreviewImg" alt="Uploaded data table image preview" />
+          <div class="meta" id="imagePreviewMeta"></div>
+        </div>
+        <div class="ocr-progress" id="ocrProgress">
+          <div id="ocrProgressText">Extracting table from image…</div>
+          <div class="bar"><span id="ocrProgressBar"></span></div>
         </div>
         <div class="edit-bar" id="editBar" hidden>
-          Editing extracted rows. Fix OCR mistakes, then lock.
+          Editing rows. OCR can misread cells — fix values, then lock.
+          <button type="button" id="btnAddRow">Add row</button>
           <button type="button" id="btnLockTable" class="primary">Lock table</button>
         </div>
-        <div style="overflow:auto; max-height: calc(100vh - 140px);">
+        <details class="ocr-raw" id="ocrRawDetails" hidden>
+          <summary>Raw OCR text (debug)</summary>
+          <pre id="ocrRawText"></pre>
+        </details>
+        <div style="overflow:auto; max-height: calc(100vh - 160px);">
           <table class="data" id="dataTable">
             <thead>
               <tr>
-                <th>As_Of_Date</th>
+                <th>Effective Date</th>
                 <th>Account</th>
-                <th>Cost_Center</th>
-                <th class="num">Amount</th>
-                <th>Check_Result</th>
+                <th>CC</th>
+                <th>Currency</th>
+                <th class="num">G/L Ending Balance</th>
+                <th>Result</th>
+                <th class="actions" id="actionsHead" hidden>Actions</th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -327,33 +496,50 @@
       </div>
     </main>
 
-    <aside class="drawer" id="drawer" aria-label="GL filter panel">
+    <div
+      class="splitter"
+      id="splitter"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize panels"
+      aria-valuemin="280"
+      aria-valuemax="900"
+      tabindex="0"
+      title="Drag to resize · double-click to reset"
+    ><span class="grip" aria-hidden="true"></span></div>
+
+    <aside class="drawer" id="drawer" aria-label="Import filter panel">
       <div class="drawer-head">
         <div>
-          <h2>GL filter &amp; compare</h2>
-          <div class="sub" id="reviewTarget">Select a data-table Account or Cost Center.</div>
+          <h2>Import filter &amp; compare</h2>
+          <div class="sub" id="reviewTarget">Select a data-table Account or CC.</div>
         </div>
         <button type="button" id="btnCloseDrawer" class="ghost" aria-label="Close panel">Close</button>
       </div>
 
       <div class="filters">
-        <label>Date from<input type="date" id="fDateFrom" /></label>
-        <label>Date to<input type="date" id="fDateTo" /></label>
-        <label>Account<input type="text" id="fAccount" placeholder="e.g. 5100" /></label>
-        <label>Cost Center<input type="text" id="fCostCenter" placeholder="e.g. CC-100" /></label>
+        <label>Date from (POSTED_DATE)<input type="date" id="fDateFrom" /></label>
+        <label>Date to (POSTED_DATE)<input type="date" id="fDateTo" /></label>
+        <label>Account / NOMINAL<input type="text" id="fAccount" placeholder="e.g. 5100" /></label>
+        <label>CC / COST_CENTRE
+          <input type="text" id="fCostCenter" placeholder="e.g. HB00214402" />
+          <span class="cc-hint">Smart match on digits / suffix</span>
+        </label>
+        <label>Currency / TXN_CURRENCY<input type="text" id="fCurrency" placeholder="e.g. USD" /></label>
         <div class="filter-actions">
           <button type="button" id="btnApply" class="primary">Apply filters</button>
           <button type="button" id="btnClearAccount">Clear Account</button>
-          <button type="button" id="btnClearCC">Clear Cost Center</button>
+          <button type="button" id="btnClearCC">Clear CC</button>
+          <button type="button" id="btnClearCcy">Clear Currency</button>
           <button type="button" id="btnResetResult">Reset row check</button>
         </div>
       </div>
 
       <div class="compare" id="compareBox">
-        <div class="metric"><div class="lbl">Expected</div><div class="val" id="mExpected">—</div></div>
-        <div class="metric"><div class="lbl">Selected sum</div><div class="val" id="mSelected">—</div></div>
+        <div class="metric"><div class="lbl">Expected (G/L Ending Balance)</div><div class="val" id="mExpected">—</div></div>
+        <div class="metric"><div class="lbl">Selected sum (FUNCTIONAL_AMOUNT)</div><div class="val" id="mSelected">—</div></div>
         <div class="metric"><div class="lbl">Delta</div><div class="val" id="mDelta">—</div></div>
-        <div class="metric status"><div class="lbl">Status</div><div class="val" id="mStatus"><span class="badge pending">Pending</span></div></div>
+        <div class="metric"><div class="lbl">Status</div><div class="val" id="mStatus"><span class="badge pending">Pending</span></div></div>
       </div>
 
       <div class="gl-tools">
@@ -367,387 +553,81 @@
           <thead>
             <tr>
               <th style="width:36px"><input type="checkbox" id="chkAll" aria-label="Select all visible" /></th>
-              <th>Posting_Date</th>
-              <th>Document_No</th>
-              <th>Account</th>
-              <th>Cost_Center</th>
-              <th>Description</th>
-              <th class="num">Amount</th>
+              <th>POSTED_DATE</th>
+              <th>NOMINAL</th>
+              <th>COST_CENTRE</th>
+              <th>TXN_CURRENCY</th>
+              <th>JOURNAL_CATEGORY</th>
+              <th class="num">FUNCTIONAL_AMOUNT</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
-        <div class="empty" id="glEmpty">Upload GL or use demo seed, then select a data-table Account or Cost Center.</div>
+        <div class="empty" id="glEmpty">Upload Import Excel/CSV or use demo seed, then select a data-table Account or CC.</div>
       </div>
     </aside>
   </div>
 
 <script>
-/* ========== Seed data (MOCK) ========== */
+/* ========== Demo seed (realistic column mapping) ========== */
 const SEED_DATA_TABLE = [
-  {
-    "As_Of_Date": "2026-06-30",
-    "Account": "5100",
-    "Cost_Center": "CC-100",
-    "Amount": 12500.0,
-    "Check_Result": ""
-  },
-  {
-    "As_Of_Date": "2026-06-30",
-    "Account": "5100",
-    "Cost_Center": "CC-200",
-    "Amount": 8300.0,
-    "Check_Result": ""
-  },
-  {
-    "As_Of_Date": "2026-06-30",
-    "Account": "5200",
-    "Cost_Center": "CC-100",
-    "Amount": 4100.0,
-    "Check_Result": ""
-  },
-  {
-    "As_Of_Date": "2026-06-30",
-    "Account": "5200",
-    "Cost_Center": "CC-300",
-    "Amount": 2750.5,
-    "Check_Result": ""
-  },
-  {
-    "As_Of_Date": "2026-06-30",
-    "Account": "6100",
-    "Cost_Center": "CC-100",
-    "Amount": 9600.0,
-    "Check_Result": ""
-  },
-  {
-    "As_Of_Date": "2026-06-30",
-    "Account": "6100",
-    "Cost_Center": "CC-200",
-    "Amount": 1520.25,
-    "Check_Result": ""
-  },
-  {
-    "As_Of_Date": "2026-06-30",
-    "Account": "7100",
-    "Cost_Center": "CC-400",
-    "Amount": 3200.0,
-    "Check_Result": ""
-  }
+  { Effective_Date: "2026-06-30", Account: "5100", CC: "HB00214402", Currency: "USD", Amount: 12500.00, Check_Result: "", BU: "01", Name: "Salaries" },
+  { Effective_Date: "2026-06-30", Account: "5100", CC: "HB00214501", Currency: "USD", Amount: 8300.00, Check_Result: "", BU: "01", Name: "Salaries" },
+  { Effective_Date: "2026-06-30", Account: "5200", CC: "HB00214402", Currency: "USD", Amount: 4100.00, Check_Result: "", BU: "01", Name: "Supplies" },
+  { Effective_Date: "2026-06-30", Account: "5200", CC: "HB00300100", Currency: "HKD", Amount: 2750.50, Check_Result: "", BU: "01", Name: "Supplies" },
+  { Effective_Date: "2026-06-30", Account: "6100", CC: "HB00214402", Currency: "USD", Amount: 9600.00, Check_Result: "", BU: "01", Name: "Travel" },
+  { Effective_Date: "2026-06-30", Account: "6100", CC: "HB00214501", Currency: "USD", Amount: 1520.25, Check_Result: "", BU: "01", Name: "Travel" },
+  { Effective_Date: "2026-06-30", Account: "7100", CC: "HB00400200", Currency: "USD", Amount: 3200.00, Check_Result: "", BU: "01", Name: "Fees" },
 ];
 
-const SEED_GL = [
-  {
-    "Posting_Date": "2026-05-28",
-    "Document_No": "JE-10027",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Prior period (should exclude from June MTD)",
-    "Amount": 999.99
-  },
-  {
-    "Posting_Date": "2026-05-28",
-    "Document_No": "JE-10029",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Prior period (should exclude from June MTD)",
-    "Amount": 999.99
-  },
-  {
-    "Posting_Date": "2026-06-02",
-    "Document_No": "JE-10015",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Travel & Entertainment \u2014 Finance",
-    "Amount": 3318.83
-  },
-  {
-    "Posting_Date": "2026-06-03",
-    "Document_No": "JE-10018",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Travel & Entertainment \u2014 Operations",
-    "Amount": 217.89
-  },
-  {
-    "Posting_Date": "2026-06-04",
-    "Document_No": "JE-10001",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Salaries & Wages \u2014 Finance",
-    "Amount": 2247.76
-  },
-  {
-    "Posting_Date": "2026-06-04",
-    "Document_No": "JE-10010",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-300",
-    "Cost_Center_Name": "Marketing",
-    "Description": "Office Supplies \u2014 Marketing",
-    "Amount": 773.84
-  },
-  {
-    "Posting_Date": "2026-06-04",
-    "Document_No": "JE-10024",
-    "Account": "7100",
-    "Account_Name": "Professional Fees",
-    "Cost_Center": "CC-400",
-    "Cost_Center_Name": "Legal",
-    "Description": "Professional Fees \u2014 Legal",
-    "Amount": 904.69
-  },
-  {
-    "Posting_Date": "2026-06-05",
-    "Document_No": "JE-10011",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-300",
-    "Cost_Center_Name": "Marketing",
-    "Description": "Office Supplies \u2014 Marketing",
-    "Amount": 126.23
-  },
-  {
-    "Posting_Date": "2026-06-07",
-    "Document_No": "JE-10012",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-300",
-    "Cost_Center_Name": "Marketing",
-    "Description": "Office Supplies \u2014 Marketing",
-    "Amount": 770.93
-  },
-  {
-    "Posting_Date": "2026-06-07",
-    "Document_No": "JE-10019",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Travel & Entertainment \u2014 Operations",
-    "Amount": 356.62
-  },
-  {
-    "Posting_Date": "2026-06-08",
-    "Document_No": "JE-10004",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Salaries & Wages \u2014 Operations",
-    "Amount": 5271.22
-  },
-  {
-    "Posting_Date": "2026-06-08",
-    "Document_No": "JE-10007",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Office Supplies \u2014 Finance",
-    "Amount": 1200.74
-  },
-  {
-    "Posting_Date": "2026-06-08",
-    "Document_No": "JE-10025",
-    "Account": "7100",
-    "Account_Name": "Professional Fees",
-    "Cost_Center": "CC-400",
-    "Cost_Center_Name": "Legal",
-    "Description": "Professional Fees \u2014 Legal",
-    "Amount": 1029.37
-  },
-  {
-    "Posting_Date": "2026-06-09",
-    "Document_No": "JE-10016",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Travel & Entertainment \u2014 Finance",
-    "Amount": 3187.63
-  },
-  {
-    "Posting_Date": "2026-06-11",
-    "Document_No": "JE-10013",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-300",
-    "Cost_Center_Name": "Marketing",
-    "Description": "Office Supplies \u2014 Marketing",
-    "Amount": 684.08
-  },
-  {
-    "Posting_Date": "2026-06-12",
-    "Document_No": "JE-10020",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Travel & Entertainment \u2014 Operations",
-    "Amount": 167.82
-  },
-  {
-    "Posting_Date": "2026-06-14",
-    "Document_No": "JE-10008",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Office Supplies \u2014 Finance",
-    "Amount": 1462.03
-  },
-  {
-    "Posting_Date": "2026-06-15",
-    "Document_No": "JE-10009",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Office Supplies \u2014 Finance",
-    "Amount": 1437.23
-  },
-  {
-    "Posting_Date": "2026-06-17",
-    "Document_No": "JE-10005",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Salaries & Wages \u2014 Operations",
-    "Amount": 1294.03
-  },
-  {
-    "Posting_Date": "2026-06-19",
-    "Document_No": "JE-10021",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Travel & Entertainment \u2014 Operations",
-    "Amount": 222.91
-  },
-  {
-    "Posting_Date": "2026-06-20",
-    "Document_No": "JE-10006",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Salaries & Wages \u2014 Operations",
-    "Amount": 1734.75
-  },
-  {
-    "Posting_Date": "2026-06-22",
-    "Document_No": "JE-10002",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Salaries & Wages \u2014 Finance",
-    "Amount": 5458.89
-  },
-  {
-    "Posting_Date": "2026-06-23",
-    "Document_No": "JE-10022",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Travel & Entertainment \u2014 Operations",
-    "Amount": 310.98
-  },
-  {
-    "Posting_Date": "2026-06-24",
-    "Document_No": "JE-10003",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Salaries & Wages \u2014 Finance",
-    "Amount": 4793.35
-  },
-  {
-    "Posting_Date": "2026-06-25",
-    "Document_No": "JE-10014",
-    "Account": "5200",
-    "Account_Name": "Office Supplies",
-    "Cost_Center": "CC-300",
-    "Cost_Center_Name": "Marketing",
-    "Description": "Office Supplies \u2014 Marketing",
-    "Amount": 395.42
-  },
-  {
-    "Posting_Date": "2026-06-26",
-    "Document_No": "JE-10017",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Travel & Entertainment \u2014 Finance",
-    "Amount": 3093.54
-  },
-  {
-    "Posting_Date": "2026-06-28",
-    "Document_No": "JE-10023",
-    "Account": "6100",
-    "Account_Name": "Travel & Entertainment",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Travel & Entertainment \u2014 Operations",
-    "Amount": 244.03
-  },
-  {
-    "Posting_Date": "2026-06-28",
-    "Document_No": "JE-10026",
-    "Account": "7100",
-    "Account_Name": "Professional Fees",
-    "Cost_Center": "CC-400",
-    "Cost_Center_Name": "Legal",
-    "Description": "Professional Fees \u2014 Legal",
-    "Amount": 1265.94
-  },
-  {
-    "Posting_Date": "2026-07-02",
-    "Document_No": "JE-10028",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-100",
-    "Cost_Center_Name": "Finance",
-    "Description": "Next period (should exclude from June MTD)",
-    "Amount": 888.88
-  },
-  {
-    "Posting_Date": "2026-07-02",
-    "Document_No": "JE-10030",
-    "Account": "5100",
-    "Account_Name": "Salaries & Wages",
-    "Cost_Center": "CC-200",
-    "Cost_Center_Name": "Operations",
-    "Description": "Next period (should exclude from June MTD)",
-    "Amount": 888.88
-  }
+const SEED_IMPORT = [
+  { POSTED_DATE: "2026-05-28", NOMINAL: "5100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 999.99, JOURNAL_CATEGORY: "Manual", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-05-28", NOMINAL: "5100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 999.99, JOURNAL_CATEGORY: "Manual", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-02", NOMINAL: "6100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3318.83, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-03", NOMINAL: "6100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 217.89, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-04", NOMINAL: "5100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2247.76, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-04", NOMINAL: "5200", COST_CENTRE: "0100300100", TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 773.84, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-05", NOMINAL: "5100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3102.40, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-06", NOMINAL: "5200", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1888.12, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-08", NOMINAL: "7100", COST_CENTRE: "0100400200", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 900.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-10", NOMINAL: "5100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 4012.50, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-11", NOMINAL: "6100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2201.17, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-12", NOMINAL: "5200", COST_CENTRE: "0100300100", TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 976.66, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-13", NOMINAL: "5100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2897.60, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-14", NOMINAL: "5200", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 955.88, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-15", NOMINAL: "6100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 498.33, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-16", NOMINAL: "7100", COST_CENTRE: "0100400200", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1034.06, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-18", NOMINAL: "5100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3124.89, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-19", NOMINAL: "6100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1980.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-20", NOMINAL: "5200", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1256.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-21", NOMINAL: "5100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2300.00, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-22", NOMINAL: "6100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2100.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-23", NOMINAL: "5200", COST_CENTRE: "0100300100", TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 1000.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-24", NOMINAL: "5100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3114.85, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-25", NOMINAL: "7100", COST_CENTRE: "0100400200", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1265.94, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-26", NOMINAL: "6100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 560.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-27", NOMINAL: "5100", COST_CENTRE: "0100214501", TXN_CURRENCY: "EUR", FUNCTIONAL_AMOUNT: 500.00, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-06-28", NOMINAL: "6100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 244.03, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-07-02", NOMINAL: "5100", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 888.88, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+  { POSTED_DATE: "2026-07-02", NOMINAL: "5100", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 888.88, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
 ];
 
 /* ========== State ========== */
+const DEFAULT_DRAWER_W = 560;
+const MIN_MAIN_W = 280;
+const MIN_DRAWER_W = 320;
+const SPLIT_STORAGE_KEY = "glVerifier.drawerWidth";
+
 let dataTable = structuredClone(SEED_DATA_TABLE);
-let glRows = SEED_GL.map((r, i) => ({ ...r, _id: i }));
+let glRows = SEED_IMPORT.map((r, i) => ({ ...r, _id: i }));
 let nextGlId = glRows.length;
 let editing = false;
 let drawerOpen = true;
 let activeRowIndex = null;
 let selectedIds = new Set();
 let visibleIds = [];
+let ocrWorker = null;
+let imageObjectUrl = null;
 
 /* ========== Utils ========== */
 function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
@@ -769,7 +649,10 @@ function parseDateToISO(v) {
     return `${String(d.y).padStart(4,"0")}-${String(d.m).padStart(2,"0")}-${String(d.d).padStart(2,"0")}`;
   }
   if (v instanceof Date && !Number.isNaN(v.getTime())) {
-    return v.toISOString().slice(0, 10);
+    const y = v.getFullYear();
+    const m = String(v.getMonth() + 1).padStart(2, "0");
+    const d = String(v.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
   }
   const s = String(v).trim();
   let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
@@ -777,7 +660,9 @@ function parseDateToISO(v) {
   m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m) return `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`;
   const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  if (!Number.isNaN(d.getTime())) {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  }
   return null;
 }
 function monthStart(iso) {
@@ -785,13 +670,19 @@ function monthStart(iso) {
   return `${y}-${String(m).padStart(2,"0")}-01`;
 }
 function normalizeHeader(h) {
-  return String(h || "").trim().toLowerCase().replace(/[\s_]+/g, " ");
+  return String(h || "").trim().toLowerCase().replace(/[\s_\-\/().]+/g, " ").replace(/\s+/g, " ").trim();
 }
 function pickCol(headers, aliases) {
   const norm = headers.map(normalizeHeader);
   for (const a of aliases) {
     const i = norm.indexOf(normalizeHeader(a));
     if (i >= 0) return i;
+  }
+  // loose contains fallback for longer headers
+  for (const a of aliases) {
+    const na = normalizeHeader(a);
+    const i = norm.findIndex(h => h === na || h.includes(na) || na.includes(h));
+    if (i >= 0 && na.length >= 2) return i;
   }
   return -1;
 }
@@ -803,10 +694,83 @@ function badgeHTML(result) {
   if (result === "Mismatch") return '<span class="badge mismatch">Mismatch</span>';
   return '<span class="badge pending">—</span>';
 }
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+function fmtDisplayDate(iso) {
+  const p = parseDateToISO(iso);
+  if (!p) return iso;
+  const [y, m, d] = p.split("-");
+  return `${m}-${d}-${y}`;
+}
+function normalizeCurrency(v) {
+  return String(v ?? "").trim().toUpperCase();
+}
+
+/**
+ * Smart COST_CENTRE match.
+ * Exact alphanumeric match, digit equality (ignore leading zeros),
+ * or suffix match on digit strings (e.g. HB00214402 ↔ 0100214402).
+ */
+function costCentersMatch(a, b) {
+  if (a == null || b == null || a === "" || b === "") return false;
+  const na = String(a).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const nb = String(b).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (na === nb) return true;
+
+  const da = String(a).replace(/\D/g, "");
+  const db = String(b).replace(/\D/g, "");
+  if (!da || !db) return false;
+
+  const za = da.replace(/^0+/, "") || "0";
+  const zb = db.replace(/^0+/, "") || "0";
+  if (za === zb) return true;
+
+  const minLen = Math.min(da.length, db.length);
+  if (minLen >= 6 && (da.endsWith(db) || db.endsWith(da))) return true;
+
+  const minZ = Math.min(za.length, zb.length);
+  if (minZ >= 6 && (za.endsWith(zb) || zb.endsWith(za))) return true;
+
+  return false;
+}
 
 /* ========== Data table render ========== */
+function rowLooksEmpty(row) {
+  return !String(row.Account || "").trim()
+    && !String(row.CC || "").trim()
+    && !(Number(row.Amount) || 0);
+}
+function deleteDataRow(idx) {
+  if (idx < 0 || idx >= dataTable.length) return;
+  const row = dataTable[idx];
+  if (!rowLooksEmpty(row)) {
+    const label = [row.Account, row.CC, money(row.Amount)].filter(Boolean).join(" · ");
+    if (!confirm(`Delete this row?\n${label}`)) return;
+  }
+  dataTable.splice(idx, 1);
+  if (activeRowIndex === idx) {
+    activeRowIndex = null;
+    selectedIds = new Set();
+    visibleIds = [];
+    document.getElementById("reviewTarget").textContent = "Select a data-table Account or CC.";
+  } else if (activeRowIndex != null && activeRowIndex > idx) {
+    activeRowIndex -= 1;
+  }
+  if (!dataTable.length) {
+    dataTable.push({
+      Effective_Date: "", Account: "", CC: "", Currency: "", Amount: 0, Check_Result: ""
+    });
+  }
+  renderDataTable();
+  renderGL();
+  updateCompare();
+}
 function renderDataTable() {
   const tbody = document.querySelector("#dataTable tbody");
+  const actionsHead = document.getElementById("actionsHead");
+  actionsHead.hidden = !editing;
   tbody.innerHTML = "";
   dataTable.forEach((row, idx) => {
     const tr = document.createElement("tr");
@@ -814,16 +778,21 @@ function renderDataTable() {
 
     if (editing) {
       tr.innerHTML = `
-        <td><input class="edit" data-k="As_Of_Date" data-i="${idx}" value="${escapeAttr(row.As_Of_Date)}" /></td>
+        <td><input class="edit" data-k="Effective_Date" data-i="${idx}" value="${escapeAttr(row.Effective_Date)}" /></td>
         <td><input class="edit" data-k="Account" data-i="${idx}" value="${escapeAttr(row.Account)}" /></td>
-        <td><input class="edit" data-k="Cost_Center" data-i="${idx}" value="${escapeAttr(row.Cost_Center)}" /></td>
+        <td><input class="edit" data-k="CC" data-i="${idx}" value="${escapeAttr(row.CC)}" /></td>
+        <td><input class="edit" data-k="Currency" data-i="${idx}" value="${escapeAttr(row.Currency)}" /></td>
         <td class="num"><input class="edit" data-k="Amount" data-i="${idx}" value="${escapeAttr(row.Amount)}" /></td>
-        <td>${badgeHTML(row.Check_Result)}</td>`;
+        <td>${badgeHTML(row.Check_Result)}</td>
+        <td class="actions">
+          <button type="button" class="row-del" data-action="delete" data-i="${idx}" aria-label="Delete row ${idx + 1}">Delete</button>
+        </td>`;
     } else {
       tr.innerHTML = `
-        <td>${escapeHtml(fmtDisplayDate(row.As_Of_Date))}</td>
+        <td>${escapeHtml(fmtDisplayDate(row.Effective_Date))}</td>
         <td><button type="button" class="cell-btn" data-action="account" data-i="${idx}">${escapeHtml(row.Account)}</button></td>
-        <td><button type="button" class="cell-btn" data-action="cc" data-i="${idx}">${escapeHtml(row.Cost_Center)}</button></td>
+        <td><button type="button" class="cell-btn" data-action="cc" data-i="${idx}">${escapeHtml(row.CC)}</button></td>
+        <td>${escapeHtml(row.Currency)}</td>
         <td class="num">${money(row.Amount)}</td>
         <td>${badgeHTML(row.Check_Result)}</td>`;
     }
@@ -831,16 +800,81 @@ function renderDataTable() {
   });
 }
 
-function fmtDisplayDate(iso) {
-  const p = parseDateToISO(iso);
-  if (!p) return iso;
-  const [y, m, d] = p.split("-");
-  return `${m}-${d}-${y}`;
+/* ========== Resizable splitter ========== */
+function clampDrawerWidth(px) {
+  const workspace = document.getElementById("workspace");
+  const total = workspace.getBoundingClientRect().width;
+  const splitter = 6;
+  const maxDrawer = Math.max(MIN_DRAWER_W, total - MIN_MAIN_W - splitter);
+  return Math.min(Math.max(px, MIN_DRAWER_W), maxDrawer);
 }
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+function applyDrawerWidth(px, persist = true) {
+  const w = clampDrawerWidth(px);
+  document.getElementById("workspace").style.setProperty("--drawer-w", `${w}px`);
+  const splitter = document.getElementById("splitter");
+  splitter.setAttribute("aria-valuenow", String(Math.round(w)));
+  if (persist) {
+    try { localStorage.setItem(SPLIT_STORAGE_KEY, String(Math.round(w))); } catch (_) {}
+  }
+  return w;
 }
-function escapeAttr(s) { return escapeHtml(s); }
+function resetDrawerWidth() {
+  applyDrawerWidth(DEFAULT_DRAWER_W, true);
+}
+function initSplitter() {
+  const workspace = document.getElementById("workspace");
+  const splitter = document.getElementById("splitter");
+  let saved = DEFAULT_DRAWER_W;
+  try {
+    const raw = localStorage.getItem(SPLIT_STORAGE_KEY);
+    if (raw) saved = Number(raw) || DEFAULT_DRAWER_W;
+  } catch (_) {}
+  applyDrawerWidth(saved, false);
+
+  let dragging = false;
+  const onMove = (clientX) => {
+    const rect = workspace.getBoundingClientRect();
+    const next = rect.right - clientX;
+    applyDrawerWidth(next, false);
+  };
+  const stopDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove("dragging");
+    document.body.classList.remove("resizing-panels");
+    const cur = parseFloat(getComputedStyle(workspace).getPropertyValue("--drawer-w")) || DEFAULT_DRAWER_W;
+    applyDrawerWidth(cur, true);
+  };
+
+  splitter.addEventListener("pointerdown", (e) => {
+    if (!drawerOpen || window.matchMedia("(max-width: 960px)").matches) return;
+    dragging = true;
+    splitter.classList.add("dragging");
+    document.body.classList.add("resizing-panels");
+    splitter.setPointerCapture?.(e.pointerId);
+    onMove(e.clientX);
+    e.preventDefault();
+  });
+  splitter.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    onMove(e.clientX);
+  });
+  splitter.addEventListener("pointerup", stopDrag);
+  splitter.addEventListener("pointercancel", stopDrag);
+  splitter.addEventListener("dblclick", resetDrawerWidth);
+  splitter.addEventListener("keydown", (e) => {
+    if (!drawerOpen) return;
+    const cur = parseFloat(getComputedStyle(workspace).getPropertyValue("--drawer-w")) || DEFAULT_DRAWER_W;
+    if (e.key === "ArrowLeft") { applyDrawerWidth(cur + 20); e.preventDefault(); }
+    if (e.key === "ArrowRight") { applyDrawerWidth(cur - 20); e.preventDefault(); }
+    if (e.key === "Home") { resetDrawerWidth(); e.preventDefault(); }
+  });
+  window.addEventListener("resize", () => {
+    if (!drawerOpen) return;
+    const cur = parseFloat(getComputedStyle(workspace).getPropertyValue("--drawer-w")) || DEFAULT_DRAWER_W;
+    applyDrawerWidth(cur, false);
+  });
+}
 
 /* ========== Drawer / filters ========== */
 function openDrawer() {
@@ -858,19 +892,20 @@ function toggleDrawer() {
 function startReview(idx, mode) {
   activeRowIndex = idx;
   const row = dataTable[idx];
-  const asOf = parseDateToISO(row.As_Of_Date);
+  const asOf = parseDateToISO(row.Effective_Date);
   if (!asOf) {
-    alert("Invalid As_Of_Date on this row.");
+    alert("Invalid Effective Date on this row.");
     return;
   }
   document.getElementById("fDateFrom").value = monthStart(asOf);
   document.getElementById("fDateTo").value = asOf;
   document.getElementById("fAccount").value = row.Account;
-  document.getElementById("fCostCenter").value = row.Cost_Center;
+  document.getElementById("fCostCenter").value = row.CC;
+  document.getElementById("fCurrency").value = row.Currency || "";
 
-  const modeLabel = mode === "account" ? "Account click" : "Cost Center click";
+  const modeLabel = mode === "account" ? "Account click" : "CC click";
   document.getElementById("reviewTarget").textContent =
-    `${modeLabel}: As_Of=${fmtDisplayDate(asOf)} · Account=${row.Account} · Cost_Center=${row.Cost_Center} · Expected=${money(row.Amount)}`;
+    `${modeLabel}: Effective=${fmtDisplayDate(asOf)} · Account/NOMINAL=${row.Account} · CC/COST_CENTRE=${row.CC} · CCY=${row.Currency || "—"} · Expected=${money(row.Amount)}`;
 
   selectedIds = new Set();
   openDrawer();
@@ -884,6 +919,7 @@ function getFilters() {
     dateTo: document.getElementById("fDateTo").value || null,
     account: document.getElementById("fAccount").value.trim(),
     costCenter: document.getElementById("fCostCenter").value.trim(),
+    currency: document.getElementById("fCurrency").value.trim(),
   };
 }
 
@@ -891,14 +927,14 @@ function applyFilters() {
   const f = getFilters();
   visibleIds = [];
   for (const r of glRows) {
-    const d = r.Posting_Date;
+    const d = r.POSTED_DATE;
     if (f.dateFrom && d < f.dateFrom) continue;
     if (f.dateTo && d > f.dateTo) continue;
-    if (f.account && String(r.Account) !== f.account) continue;
-    if (f.costCenter && String(r.Cost_Center) !== f.costCenter) continue;
+    if (f.account && String(r.NOMINAL) !== f.account) continue;
+    if (f.costCenter && !costCentersMatch(r.COST_CENTRE, f.costCenter)) continue;
+    if (f.currency && normalizeCurrency(r.TXN_CURRENCY) !== normalizeCurrency(f.currency)) continue;
     visibleIds.push(r._id);
   }
-  // Drop selections that are no longer visible
   selectedIds = new Set([...selectedIds].filter(id => visibleIds.includes(id)));
   renderGL();
   updateCompare();
@@ -911,7 +947,7 @@ function renderGL() {
 
   if (!glRows.length) {
     empty.hidden = false;
-    empty.textContent = "Upload GL Excel (.xlsx).";
+    empty.textContent = "Upload Import Excel (.xlsx) or CSV.";
     document.getElementById("glCounts").textContent = "0 visible · 0 selected";
     document.getElementById("chkAll").checked = false;
     return;
@@ -919,7 +955,7 @@ function renderGL() {
   if (!visibleIds.length) {
     empty.hidden = false;
     empty.textContent = activeRowIndex == null
-      ? "Select a data-table Account or Cost Center."
+      ? "Select a data-table Account or CC."
       : "No rows match filters.";
   } else {
     empty.hidden = true;
@@ -931,13 +967,13 @@ function renderGL() {
     const tr = document.createElement("tr");
     const checked = selectedIds.has(id) ? "checked" : "";
     tr.innerHTML = `
-      <td><input type="checkbox" data-id="${id}" class="row-chk" ${checked} aria-label="Select row ${escapeAttr(r.Document_No || id)}" /></td>
-      <td>${escapeHtml(r.Posting_Date)}</td>
-      <td>${escapeHtml(r.Document_No || "")}</td>
-      <td>${escapeHtml(r.Account)}</td>
-      <td>${escapeHtml(r.Cost_Center)}</td>
-      <td title="${escapeAttr(r.Description || "")}">${escapeHtml(r.Description || "")}</td>
-      <td class="num">${money(r.Amount)}</td>`;
+      <td><input type="checkbox" data-id="${id}" class="row-chk" ${checked} aria-label="Select row ${id}" /></td>
+      <td>${escapeHtml(r.POSTED_DATE)}</td>
+      <td>${escapeHtml(r.NOMINAL)}</td>
+      <td title="Matches image CC via smart digit/suffix rules">${escapeHtml(r.COST_CENTRE)}</td>
+      <td>${escapeHtml(r.TXN_CURRENCY)}</td>
+      <td>${escapeHtml(r.JOURNAL_CATEGORY || "")}</td>
+      <td class="num">${money(r.FUNCTIONAL_AMOUNT)}</td>`;
     tbody.appendChild(tr);
   }
 
@@ -952,7 +988,7 @@ function selectedSum() {
   const byId = new Map(glRows.map(r => [r._id, r]));
   for (const id of selectedIds) {
     const r = byId.get(id);
-    if (r) sum += Number(r.Amount) || 0;
+    if (r) sum += Number(r.FUNCTIONAL_AMOUNT) || 0;
   }
   return round2(sum);
 }
@@ -990,39 +1026,202 @@ function updateCompare() {
     : '<span class="badge mismatch">Mismatch</span>';
 
   dataTable[activeRowIndex].Check_Result = match ? "Match" : "Mismatch";
-  // refresh only Check_Result cell without full re-bind of buttons focus: light re-render
   renderDataTable();
 }
 
-/* ========== CSV / XLSX load ========== */
-function parseCSV(text) {
-  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter(l => l.trim().length);
-  if (!lines.length) throw new Error("Empty CSV");
-  const headers = splitCSVLine(lines[0]).map(h => h.trim());
-  const map = {
-    As_Of_Date: pickCol(headers, ["As_Of_Date", "As Of Date", "Date"]),
-    Account: pickCol(headers, ["Account", "Account_No", "Account Number"]),
-    Cost_Center: pickCol(headers, ["Cost_Center", "Cost Center", "CC"]),
-    Amount: pickCol(headers, ["Amount"]),
-    Check_Result: pickCol(headers, ["Check_Result", "Check Result"]),
-  };
-  if (map.As_Of_Date < 0 || map.Account < 0 || map.Cost_Center < 0 || map.Amount < 0) {
-    throw new Error("CSV missing required columns: As_Of_Date, Account, Cost_Center, Amount");
+/* ========== Image OCR ========== */
+function isImageFile(file) {
+  if (!file) return false;
+  if (file.type && file.type.startsWith("image/")) return true;
+  return /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(file.name || "");
+}
+function setOcrProgress(visible, pct, text = "") {
+  const box = document.getElementById("ocrProgress");
+  const bar = document.getElementById("ocrProgressBar");
+  const label = document.getElementById("ocrProgressText");
+  box.classList.toggle("visible", visible);
+  if (typeof pct === "number" && !Number.isNaN(pct)) {
+    bar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
   }
+  if (text) label.textContent = text;
+}
+function showImagePreview(file, note) {
+  const wrap = document.getElementById("imagePreview");
+  const img = document.getElementById("imagePreviewImg");
+  const meta = document.getElementById("imagePreviewMeta");
+  if (imageObjectUrl) URL.revokeObjectURL(imageObjectUrl);
+  imageObjectUrl = URL.createObjectURL(file);
+  img.src = imageObjectUrl;
+  meta.innerHTML = `<strong>${escapeHtml(file.name)}</strong><br>${note || "Uploaded image — extract rows below, then review & lock."}`;
+  wrap.classList.add("visible");
+}
+function clearImagePreview() {
+  const wrap = document.getElementById("imagePreview");
+  wrap.classList.remove("visible");
+  if (imageObjectUrl) {
+    URL.revokeObjectURL(imageObjectUrl);
+    imageObjectUrl = null;
+  }
+}
+function showOcrRaw(text) {
+  const details = document.getElementById("ocrRawDetails");
+  const pre = document.getElementById("ocrRawText");
+  if (!text) {
+    details.hidden = true;
+    pre.textContent = "";
+    return;
+  }
+  details.hidden = false;
+  pre.textContent = text;
+}
+function clusterWordsIntoLines(words, yTolerance = 14) {
+  const usable = (words || []).filter(w =>
+    w && w.text && String(w.text).trim() && (w.confidence == null || w.confidence >= 35)
+  );
+  const lines = [];
+  for (const w of usable) {
+    const y = (w.bbox.y0 + w.bbox.y1) / 2;
+    let line = lines.find(l => Math.abs(l.y - y) < yTolerance);
+    if (!line) {
+      line = { y, words: [] };
+      lines.push(line);
+    }
+    line.words.push(w);
+    line.y = (line.y * (line.words.length - 1) + y) / line.words.length;
+  }
+  lines.sort((a, b) => a.y - b.y);
+  for (const line of lines) line.words.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+  return lines;
+}
+function parseDataRowFromText(lineText, fallbackDate = "") {
+  const text = String(lineText || "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  if (/^(bu|account|cc|effective|transaction|g\/?l|ending|result|name|date due|completed)\b/i.test(text)
+      && !/\d{1,3}(?:,\d{3})*\.\d{2}/.test(text)) {
+    return null;
+  }
+
+  const currencyRe = /\b(USD|HKD|EUR|GBP|CNY|JPY|SGD|AUD|CAD|CHF|CNH)\b/i;
+  const dateRe = /\b(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})\b/;
+  const amountRe = /[-+]?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\b/g;
+  const ccRe = /\b([A-Z]{1,4}\d{6,14}|\d{8,14})\b/i;
+
+  const amounts = text.match(amountRe);
+  if (!amounts || !amounts.length) return null;
+  const amount = parseAmount(amounts[amounts.length - 1]);
+  if (Number.isNaN(amount)) return null;
+
+  const ccyM = text.match(currencyRe);
+  const currency = ccyM ? ccyM[1].toUpperCase() : "";
+  const dateM = text.match(dateRe);
+  const effective = dateM ? (parseDateToISO(dateM[1]) || dateM[1]) : fallbackDate;
+
+  // Prefer letter+digits CC codes; else long digit codes that are not the amount digits.
+  let cc = "";
+  const ccMatches = [...text.matchAll(new RegExp(ccRe.source, "gi"))].map(m => m[1]);
+  const letterCC = ccMatches.find(v => /[A-Za-z]/.test(v));
+  if (letterCC) cc = letterCC.toUpperCase();
+  else if (ccMatches.length) {
+    cc = ccMatches.find(v => !amounts.some(a => a.replace(/[^\d]/g, "").includes(v))) || ccMatches[0];
+  }
+
+  // Account: 4–8 digit token that is not part of CC / amount.
+  let account = "";
+  const tokens = text.split(" ");
+  for (const t of tokens) {
+    if (/^\d{4,8}$/.test(t) && t !== cc && !(cc && cc.includes(t))) {
+      account = t;
+      break;
+    }
+  }
+  if (!account) {
+    const m = text.match(/\b(\d{4,8})\b/);
+    if (m) account = m[1];
+  }
+
+  if (!account && !cc) return null;
+  return {
+    Effective_Date: effective || "",
+    Account: account || "",
+    CC: cc || "",
+    Currency: currency,
+    Amount: amount,
+    Check_Result: "",
+  };
+}
+function parseOcrResultToRows(ocrData) {
+  const lines = clusterWordsIntoLines(ocrData.words || []);
+  const textLines = lines.length
+    ? lines.map(l => l.words.map(w => w.text).join(" "))
+    : String(ocrData.text || "").split(/\r?\n/);
+
+  // Find a common as-of / effective date from the whole OCR blob if row dates are missing.
+  const allText = String(ocrData.text || textLines.join("\n"));
+  const globalDateM = allText.match(/\b(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})\b/);
+  const fallbackDate = globalDateM ? (parseDateToISO(globalDateM[1]) || "") : "";
+
   const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    const asOf = parseDateToISO(cols[map.As_Of_Date]);
-    rows.push({
-      As_Of_Date: asOf || String(cols[map.As_Of_Date] || "").trim(),
-      Account: String(cols[map.Account] || "").trim(),
-      Cost_Center: String(cols[map.Cost_Center] || "").trim(),
-      Amount: parseAmount(cols[map.Amount]),
-      Check_Result: map.Check_Result >= 0 ? String(cols[map.Check_Result] || "").trim() : "",
-    });
+  for (const line of textLines) {
+    const row = parseDataRowFromText(line, fallbackDate);
+    if (row) rows.push(row);
   }
   return rows;
 }
+async function getOcrWorker(onProgress) {
+  if (typeof Tesseract === "undefined") {
+    throw new Error("Tesseract.js failed to load (CDN). Stay online for first OCR run, or upload CSV instead.");
+  }
+  if (!ocrWorker) {
+    ocrWorker = await Tesseract.createWorker("eng", 1, {
+      logger: (m) => {
+        if (!onProgress) return;
+        if (m.status === "recognizing text" && m.progress != null) {
+          onProgress(10 + Math.round(m.progress * 85), `OCR recognizing… ${Math.round(m.progress * 100)}%`);
+        } else if (m.status) {
+          onProgress(null, `OCR: ${m.status}`);
+        }
+      },
+    });
+  }
+  return ocrWorker;
+}
+async function extractTableFromImage(file) {
+  setOcrProgress(true, 2, "Loading OCR engine…");
+  showImagePreview(file, "Running OCR — please wait.");
+  const worker = await getOcrWorker((pct, text) => {
+    if (pct != null) setOcrProgress(true, pct, text);
+    else setOcrProgress(true, undefined, text);
+  });
+  setOcrProgress(true, 12, "Reading image…");
+  const result = await worker.recognize(file);
+  const rows = parseOcrResultToRows(result.data || {});
+  showOcrRaw(result.data?.text || "");
+  if (!rows.length) {
+    throw new Error(
+      "OCR could not detect table rows. Tip: use a clearer crop, or upload a CSV export of the image table instead."
+    );
+  }
+  setOcrProgress(true, 100, `Extracted ${rows.length} row(s). Review & lock.`);
+  return rows;
+}
+function loadDataTableRows(rows, statusMsg, fromOcr = false) {
+  dataTable = rows;
+  activeRowIndex = null;
+  selectedIds = new Set();
+  editing = true;
+  document.getElementById("editBar").hidden = false;
+  setLoadStatus(statusMsg);
+  visibleIds = [];
+  renderDataTable();
+  renderGL();
+  updateCompare();
+  if (fromOcr) {
+    document.getElementById("imagePreviewMeta").innerHTML =
+      `<strong>OCR complete</strong><br>${rows.length} row(s) extracted. Edit any mistakes, then Lock table.`;
+  }
+}
+
+/* ========== CSV helpers ========== */
 function splitCSVLine(line) {
   const out = [];
   let cur = "";
@@ -1030,7 +1229,7 @@ function splitCSVLine(line) {
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     if (c === '"') {
-      if (q && line[i+1] === '"') { cur += '"'; i++; }
+      if (q && line[i + 1] === '"') { cur += '"'; i++; }
       else q = !q;
     } else if (c === "," && !q) {
       out.push(cur); cur = "";
@@ -1040,68 +1239,151 @@ function splitCSVLine(line) {
   return out;
 }
 
-function parseWorkbook(ab) {
-  if (typeof XLSX === "undefined") throw new Error("SheetJS failed to load (CDN). Open online or host xlsx.full.min.js locally.");
-  const wb = XLSX.read(ab, { type: "array", cellDates: true });
-  let sheetName = wb.SheetNames.includes("GL Detail") ? "GL Detail" : null;
-  if (!sheetName) {
-    for (const name of wb.SheetNames) {
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" });
-      if (!rows.length) continue;
-      const headers = rows[0];
-      const di = pickCol(headers, ["Posting_Date", "Date", "Posting Date"]);
-      const ai = pickCol(headers, ["Account", "Account_No", "Account Number"]);
-      const ci = pickCol(headers, ["Cost_Center", "Cost Center", "CC"]);
-      const mi = pickCol(headers, ["Amount", "Debit"]);
-      if (di >= 0 && ai >= 0 && ci >= 0 && mi >= 0) { sheetName = name; break; }
+function parseCSVMatrix(text) {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter(l => l.trim().length);
+  if (!lines.length) throw new Error("Empty CSV");
+  return lines.map(splitCSVLine);
+}
+
+const IMAGE_ALIASES = {
+  Effective_Date: ["Effective Date", "Effective_Date", "As_Of_Date", "As Of Date", "Date"],
+  Account: ["Account", "NOMINAL", "Account_No", "Account Number"],
+  CC: ["CC", "Cost_Center", "Cost Center", "COST_CENTRE", "COST_CENTER"],
+  Currency: ["Transaction Currency (CCY2) Code", "Transaction Currency CCY2 Code", "Transaction Currency", "CCY2", "TXN_CURRENCY", "Currency"],
+  Amount: ["G/L Ending Balance", "G L Ending Balance", "GL Ending Balance", "Ending Balance", "Amount", "FUNCTIONAL_AMOUNT"],
+  Check_Result: ["Result", "Check_Result", "Check Result", "Completed"],
+};
+
+function parseImageDataTable(matrix) {
+  const headers = matrix[0].map(h => String(h).trim());
+  const map = {};
+  for (const [key, aliases] of Object.entries(IMAGE_ALIASES)) {
+    map[key] = pickCol(headers, aliases);
+  }
+  const missing = ["Effective_Date", "Account", "CC", "Amount"].filter(k => map[k] < 0);
+  if (missing.length) {
+    throw new Error(
+      "Image data table CSV missing required columns: " +
+      missing.join(", ") +
+      "\nExpected headers like: Effective Date, Account, CC, Transaction Currency (CCY2) Code, G/L Ending Balance"
+    );
+  }
+  const rows = [];
+  for (let i = 1; i < matrix.length; i++) {
+    const cols = matrix[i];
+    if (!cols || cols.every(c => c === "" || c == null)) continue;
+    const asOf = parseDateToISO(cols[map.Effective_Date]);
+    rows.push({
+      Effective_Date: asOf || String(cols[map.Effective_Date] || "").trim(),
+      Account: String(cols[map.Account] || "").trim(),
+      CC: String(cols[map.CC] || "").trim(),
+      Currency: map.Currency >= 0 ? String(cols[map.Currency] || "").trim() : "",
+      Amount: parseAmount(cols[map.Amount]),
+      Check_Result: map.Check_Result >= 0 ? String(cols[map.Check_Result] || "").trim() : "",
+    });
+  }
+  if (!rows.length) throw new Error("No data rows found in image data table CSV");
+  return rows;
+}
+
+const IMPORT_ALIASES = {
+  POSTED_DATE: ["POSTED_DATE", "Posted Date", "Posting_Date", "Posting Date", "GL_DATE", "ACCOUNTING_DATE"],
+  NOMINAL: ["NOMINAL", "Account", "Account_No", "Account Number"],
+  COST_CENTRE: ["COST_CENTRE", "COST_CENTER", "Cost_Center", "Cost Center", "CC"],
+  TXN_CURRENCY: ["TXN_CURRENCY", "Transaction Currency", "Currency", "CCY"],
+  FUNCTIONAL_AMOUNT: ["FUNCTIONAL_AMOUNT", "Functional Amount", "Amount", "TXN_AMT"],
+  JOURNAL_CATEGORY: ["JOURNAL_CATEGORY", "Journal Category", "Category"],
+  LEGAL_ENTITY: ["LEGAL_ENTITY", "Legal Entity", "BU"],
+};
+
+function parseImportMatrix(matrix, sheetName) {
+  // find header row (first non-empty with enough aliases)
+  let headerRowIdx = 0;
+  let headers = matrix[0] || [];
+  for (let r = 0; r < Math.min(matrix.length, 20); r++) {
+    const h = (matrix[r] || []).map(x => String(x ?? "").trim());
+    const di = pickCol(h, IMPORT_ALIASES.POSTED_DATE);
+    const ai = pickCol(h, IMPORT_ALIASES.NOMINAL);
+    const ci = pickCol(h, IMPORT_ALIASES.COST_CENTRE);
+    const mi = pickCol(h, IMPORT_ALIASES.FUNCTIONAL_AMOUNT);
+    if (di >= 0 && ai >= 0 && ci >= 0 && mi >= 0) {
+      headerRowIdx = r;
+      headers = h;
+      break;
     }
   }
-  if (!sheetName) sheetName = wb.SheetNames[0];
-  const sheet = wb.Sheets[sheetName];
-  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
-  if (!matrix.length) throw new Error("Empty sheet");
-  const headers = matrix[0];
-  const di = pickCol(headers, ["Posting_Date", "Date", "Posting Date"]);
-  const ai = pickCol(headers, ["Account", "Account_No", "Account Number"]);
-  const ci = pickCol(headers, ["Cost_Center", "Cost Center", "CC"]);
-  const mi = pickCol(headers, ["Amount", "Debit"]);
+
+  const di = pickCol(headers, IMPORT_ALIASES.POSTED_DATE);
+  const ai = pickCol(headers, IMPORT_ALIASES.NOMINAL);
+  const ci = pickCol(headers, IMPORT_ALIASES.COST_CENTRE);
+  const mi = pickCol(headers, IMPORT_ALIASES.FUNCTIONAL_AMOUNT);
+  const ccy = pickCol(headers, IMPORT_ALIASES.TXN_CURRENCY);
+  const jci = pickCol(headers, IMPORT_ALIASES.JOURNAL_CATEGORY);
+  const lei = pickCol(headers, IMPORT_ALIASES.LEGAL_ENTITY);
+
   if (di < 0 || ai < 0 || ci < 0 || mi < 0) {
-    throw new Error("GL sheet missing required columns (date, account, cost center, amount)");
+    throw new Error(
+      "Import file missing required columns (POSTED_DATE, NOMINAL, COST_CENTRE, FUNCTIONAL_AMOUNT)." +
+      (sheetName ? ` Sheet: ${sheetName}` : "")
+    );
   }
-  const doci = pickCol(headers, ["Document_No", "Document No", "Doc"]);
-  const desci = pickCol(headers, ["Description", "Memo", "Narration"]);
-  const aname = pickCol(headers, ["Account_Name", "Account Name"]);
-  const cname = pickCol(headers, ["Cost_Center_Name", "Cost Center Name"]);
 
   const out = [];
-  for (let i = 1; i < matrix.length; i++) {
+  for (let i = headerRowIdx + 1; i < matrix.length; i++) {
     const row = matrix[i];
     if (!row || row.every(c => c === "" || c == null)) continue;
     const iso = parseDateToISO(row[di]);
     if (!iso) continue;
     out.push({
-      Posting_Date: iso,
-      Document_No: doci >= 0 ? String(row[doci] ?? "") : "",
-      Account: String(row[ai] ?? "").trim(),
-      Account_Name: aname >= 0 ? String(row[aname] ?? "") : "",
-      Cost_Center: String(row[ci] ?? "").trim(),
-      Cost_Center_Name: cname >= 0 ? String(row[cname] ?? "") : "",
-      Description: desci >= 0 ? String(row[desci] ?? "") : "",
-      Amount: parseAmount(row[mi]),
+      POSTED_DATE: iso,
+      NOMINAL: String(row[ai] ?? "").trim(),
+      COST_CENTRE: String(row[ci] ?? "").trim(),
+      TXN_CURRENCY: ccy >= 0 ? String(row[ccy] ?? "").trim() : "",
+      FUNCTIONAL_AMOUNT: parseAmount(row[mi]),
+      JOURNAL_CATEGORY: jci >= 0 ? String(row[jci] ?? "").trim() : "",
+      LEGAL_ENTITY: lei >= 0 ? String(row[lei] ?? "").trim() : "",
       _id: nextGlId++,
     });
   }
-  return { sheetName, rows: out };
+  return { sheetName: sheetName || "CSV", rows: out };
+}
+
+function parseImportWorkbook(ab) {
+  if (typeof XLSX === "undefined") {
+    throw new Error("SheetJS failed to load (CDN). Open while online, or host xlsx.full.min.js locally.");
+  }
+  const wb = XLSX.read(ab, { type: "array", cellDates: true });
+  const preferred = ["GL Detail", "Import", "Sheet1"];
+  let sheetName = preferred.find(n => wb.SheetNames.includes(n)) || null;
+
+  if (!sheetName) {
+    for (const name of wb.SheetNames) {
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" });
+      if (!rows.length) continue;
+      try {
+        const parsed = parseImportMatrix(rows, name);
+        if (parsed.rows.length) return parsed;
+      } catch (_) { /* try next */ }
+    }
+    sheetName = wb.SheetNames[0];
+  }
+
+  const matrix = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: "", raw: true });
+  return parseImportMatrix(matrix, sheetName);
 }
 
 function exportCSV() {
-  const headers = ["As_Of_Date", "Account", "Cost_Center", "Amount", "Check_Result"];
+  const headers = [
+    "Effective Date", "Account", "CC", "Transaction Currency (CCY2) Code",
+    "G/L Ending Balance", "Result"
+  ];
   const lines = [headers.join(",")];
   for (const r of dataTable) {
     const vals = [
-      parseDateToISO(r.As_Of_Date) || r.As_Of_Date,
+      parseDateToISO(r.Effective_Date) || r.Effective_Date,
       r.Account,
-      r.Cost_Center,
+      r.CC,
+      r.Currency || "",
       round2(r.Amount).toFixed(2),
       r.Check_Result || "",
     ].map(v => {
@@ -1121,8 +1403,14 @@ function exportCSV() {
 /* ========== Events ========== */
 document.querySelector("#dataTable").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-action]");
-  if (!btn || editing) return;
+  if (!btn) return;
   const idx = Number(btn.dataset.i);
+  if (btn.dataset.action === "delete") {
+    if (!editing) return;
+    deleteDataRow(idx);
+    return;
+  }
+  if (editing) return;
   startReview(idx, btn.dataset.action === "account" ? "account" : "cc");
 });
 
@@ -1133,7 +1421,7 @@ document.querySelector("#dataTable").addEventListener("change", (e) => {
   const k = inp.dataset.k;
   let v = inp.value;
   if (k === "Amount") v = parseAmount(v);
-  if (k === "As_Of_Date") v = parseDateToISO(v) || v;
+  if (k === "Effective_Date") v = parseDateToISO(v) || v;
   dataTable[i][k] = v;
 });
 
@@ -1145,8 +1433,26 @@ document.getElementById("btnEditToggle").addEventListener("click", () => {
 document.getElementById("btnLockTable").addEventListener("click", () => {
   editing = false;
   document.getElementById("editBar").hidden = true;
+  setOcrProgress(false);
   renderDataTable();
 });
+document.getElementById("btnAddRow").addEventListener("click", () => {
+  const proto = dataTable[0] || {
+    Effective_Date: "", Account: "", CC: "", Currency: "", Amount: 0, Check_Result: ""
+  };
+  dataTable.push({
+    Effective_Date: proto.Effective_Date || "",
+    Account: "",
+    CC: "",
+    Currency: proto.Currency || "",
+    Amount: 0,
+    Check_Result: "",
+  });
+  editing = true;
+  document.getElementById("editBar").hidden = false;
+  renderDataTable();
+});
+document.getElementById("btnResetSplit").addEventListener("click", resetDrawerWidth);
 
 document.getElementById("btnApply").addEventListener("click", applyFilters);
 document.getElementById("btnClearAccount").addEventListener("click", () => {
@@ -1155,6 +1461,10 @@ document.getElementById("btnClearAccount").addEventListener("click", () => {
 });
 document.getElementById("btnClearCC").addEventListener("click", () => {
   document.getElementById("fCostCenter").value = "";
+  applyFilters();
+});
+document.getElementById("btnClearCcy").addEventListener("click", () => {
+  document.getElementById("fCurrency").value = "";
   applyFilters();
 });
 document.getElementById("btnResetResult").addEventListener("click", () => {
@@ -1197,35 +1507,50 @@ document.getElementById("btnCloseDrawer").addEventListener("click", closeDrawer)
 document.getElementById("btnToggleDrawer").addEventListener("click", toggleDrawer);
 document.getElementById("btnExport").addEventListener("click", exportCSV);
 
-document.getElementById("csvInput").addEventListener("change", async (e) => {
+document.getElementById("imageDataInput").addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
   try {
-    const text = await file.text();
-    dataTable = parseCSV(text);
-    activeRowIndex = null;
-    selectedIds = new Set();
-    editing = true;
-    document.getElementById("editBar").hidden = false;
-    setLoadStatus(`CSV loaded: ${file.name} (${dataTable.length} rows) — review & lock`);
-    renderDataTable();
-    updateCompare();
+    if (isImageFile(file)) {
+      const rows = await extractTableFromImage(file);
+      loadDataTableRows(
+        rows,
+        `OCR from ${file.name}: ${rows.length} rows — review & lock`,
+        true
+      );
+    } else {
+      clearImagePreview();
+      showOcrRaw("");
+      setOcrProgress(false);
+      const text = await file.text();
+      const matrix = parseCSVMatrix(text);
+      const rows = parseImageDataTable(matrix);
+      loadDataTableRows(rows, `CSV loaded: ${file.name} (${rows.length} rows) — review & lock`);
+    }
   } catch (err) {
+    setOcrProgress(false);
     alert(err.message || String(err));
   }
   e.target.value = "";
 });
 
-document.getElementById("xlsxInput").addEventListener("change", async (e) => {
+document.getElementById("importInput").addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
   try {
-    const ab = await file.arrayBuffer();
-    const { sheetName, rows } = parseWorkbook(ab);
-    glRows = rows;
+    const name = file.name.toLowerCase();
+    let parsed;
+    if (name.endsWith(".csv") || file.type === "text/csv" || file.type === "text/plain") {
+      const text = await file.text();
+      parsed = parseImportMatrix(parseCSVMatrix(text), file.name);
+    } else {
+      const ab = await file.arrayBuffer();
+      parsed = parseImportWorkbook(ab);
+    }
+    glRows = parsed.rows;
     nextGlId = glRows.reduce((m, r) => Math.max(m, r._id + 1), 0);
     selectedIds = new Set();
-    setLoadStatus(`GL loaded: ${file.name} / ${sheetName} (${glRows.length} rows)`);
+    setLoadStatus(`Import loaded: ${file.name} / ${parsed.sheetName} (${glRows.length} rows)`);
     if (activeRowIndex != null) applyFilters();
     else {
       visibleIds = [];
@@ -1239,6 +1564,7 @@ document.getElementById("xlsxInput").addEventListener("change", async (e) => {
 });
 
 /* ========== Init ========== */
+initSplitter();
 renderDataTable();
 visibleIds = [];
 renderGL();

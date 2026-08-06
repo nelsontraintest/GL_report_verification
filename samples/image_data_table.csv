@@ -1,0 +1,8 @@
+BU,Account,CC,Transaction Currency (CCY2) Code,Product Code,Source Field,Customer Type,Affiliate,Leder Code,Acc Seg 10,Name,Effective Date,Date Due,Completed,Result,G/L Ending Balance
+01,5100,HB00214402,USD,,,,,,,Salaries,2026-06-30,,,,12500.00
+01,5100,HB00214501,USD,,,,,,,Salaries,2026-06-30,,,,8300.00
+01,5200,HB00214402,USD,,,,,,,Supplies,2026-06-30,,,,4100.00
+01,5200,HB00300100,HKD,,,,,,,Supplies,2026-06-30,,,,2750.50
+01,6100,HB00214402,USD,,,,,,,Travel,2026-06-30,,,,9600.00
+01,6100,HB00214501,USD,,,,,,,Travel,2026-06-30,,,,1520.25
+01,7100,HB00400200,USD,,,,,,,Fees,2026-06-30,,,,3200.00
