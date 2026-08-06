@@ -321,6 +321,45 @@
   .gl-controls {
     background: var(--panel);
   }
+  .col-map {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    background: #eef6ff;
+  }
+  .col-map .col-map-title {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: #174ea6;
+    font-weight: 650;
+    margin: 0;
+  }
+  .col-map .col-map-hint {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    color: var(--muted);
+    margin: 0;
+    line-height: 1.35;
+  }
+  .col-map label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .col-map select {
+    border: 1px solid #bfd4f0;
+    border-radius: 4px;
+    padding: 6px 8px;
+    background: #fff;
+    color: var(--ink);
+  }
+  @media (max-width: 1100px) {
+    .col-map { grid-template-columns: 1fr 1fr; }
+  }
 
   /* Slim bottom dock — totals stay visible without stealing table height */
   .sum-dock {
@@ -925,6 +964,15 @@
       </div>
 
       <div class="gl-controls" id="glControls">
+        <div class="col-map" id="colMapBar" aria-label="GL column mapping">
+          <p class="col-map-title">Column mapping (auto-detected — change if Account / CC / Currency look wrong)</p>
+          <p class="col-map-hint">Column order in Excel does not matter. We match by header name; you can fix any mismatch here.</p>
+          <label>Date → <select id="mapPostedDate"></select></label>
+          <label>Account → <select id="mapNominal"></select></label>
+          <label>CC → <select id="mapCostCentre"></select></label>
+          <label>Currency → <select id="mapCurrency"></select></label>
+          <label>Amount → <select id="mapAmount"></select></label>
+        </div>
         <div class="filters">
           <label class="key-field">Date to <span class="key-tag">Key</span>
             <span class="cc-hint" style="display:block;margin:0;font-weight:500">= Effective Date / period end · Date from auto-fills</span>
@@ -1137,6 +1185,13 @@ const CADENCY_COLLAPSE_KEY = "glVerifier.cadencyCollapsed";
 
 let dataTable = structuredClone(SEED_DATA_TABLE);
 let glAllHeaders = [...SEED_HEADERS];
+let glFieldMap = {
+  POSTED_DATE: "POSTED_DATE",
+  NOMINAL: "NOMINAL",
+  COST_CENTRE: "COST_CENTRE",
+  TXN_CURRENCY: "TXN_CURRENCY",
+  FUNCTIONAL_AMOUNT: "FUNCTIONAL_AMOUNT",
+};
 let glRows = SEED_IMPORT_RAW.map((raw, i) => rowFromSeedObject(raw, i));
 let nextGlId = glRows.length;
 let visibleColSet = loadVisibleCols();
@@ -1206,19 +1261,115 @@ function syncDateFromFromTo(apply = false) {
 function normalizeHeader(h) {
   return String(h || "").trim().toLowerCase().replace(/[\s_\-\/().]+/g, " ").replace(/\s+/g, " ").trim();
 }
+
+/**
+ * Score how well a file header matches a logical GL field.
+ * Stricter than substring matching so column order / similar names
+ * (Account vs ACCOUNTING_DATE, Currency vs FUNCTIONAL_CURRENCY) don't collide.
+ */
+function scoreHeaderForField(header, field) {
+  const h = normalizeHeader(header);
+  if (!h) return -1;
+
+  if (field === "POSTED_DATE") {
+    if (h === "posted date" || h === "posted_date") return 100;
+    if (h === "posting date" || h === "posting_date") return 95;
+    if (h.includes("posted") && h.includes("date")) return 90;
+    if (h.includes("posting") && h.includes("date")) return 85;
+    if (h === "gl date") return 40;
+    if (h === "accounting date") return 25;
+    return -1;
+  }
+  if (field === "NOMINAL") {
+    if (h.includes("accounting")) return -1; // never Account ← ACCOUNTING_DATE
+    if (h === "nominal") return 100;
+    if (h === "account" || h === "account no" || h === "account number" || h === "account_no") return 90;
+    if (h === "nominal account" || h === "gl account") return 85;
+    if (h.startsWith("account ") && !h.includes("accounting")) return 70;
+    return -1;
+  }
+  if (field === "COST_CENTRE") {
+    if (h === "cost centre" || h === "cost center" || h === "cost_centre" || h === "cost_center") return 100;
+    if ((h.includes("cost") && (h.includes("cent") || h.includes("center"))) || h === "costcentre") return 90;
+    if (h === "cc") return 70;
+    return -1;
+  }
+  if (field === "TXN_CURRENCY") {
+    if (h.includes("functional") && h.includes("currency")) return -1; // not FUNCTIONAL_CURRENCY
+    if (h === "txn currency" || h === "txn_currency") return 100;
+    if (h === "transaction currency" || h === "trans currency") return 95;
+    if (h === "ccy" || h === "ccy2" || h === "currency code") return 90;
+    if (h === "currency") return 80;
+    if (h.includes("txn") && h.includes("currency")) return 92;
+    if (h.includes("transaction") && h.includes("currency")) return 88;
+    return -1;
+  }
+  if (field === "FUNCTIONAL_AMOUNT") {
+    if (h === "functional amount" || h === "functional_amount") return 100;
+    if (h.includes("functional") && h.includes("amount")) return 95;
+    if (h === "txn amt" || h === "txn amount" || h === "txn_amt") return 55;
+    if (h === "amount") return 45;
+    if (h.endsWith(" amount") && !h.includes("txn")) return 50;
+    return -1;
+  }
+  return -1;
+}
+
+/** Pick best unused header index for a logical field. */
+function pickColForField(headers, field, usedIdx = new Set()) {
+  let best = -1;
+  let bestScore = 0;
+  (headers || []).forEach((h, i) => {
+    if (usedIdx.has(i)) return;
+    const s = scoreHeaderForField(h, field);
+    if (s > bestScore) {
+      bestScore = s;
+      best = i;
+    }
+  });
+  return bestScore > 0 ? best : -1;
+}
+
+/**
+ * Detect logical → actual header map. Order of columns in the file does not matter.
+ * Assigns high-confidence matches first so weak aliases cannot steal better columns.
+ */
+function detectGlFieldMap(headers) {
+  const fields = ["POSTED_DATE", "NOMINAL", "COST_CENTRE", "FUNCTIONAL_AMOUNT", "TXN_CURRENCY"];
+  const map = {};
+  const used = new Set();
+  for (const minScore of [80, 50, 1]) {
+    for (const field of fields) {
+      if (map[field]) continue;
+      let best = -1;
+      let bestScore = 0;
+      (headers || []).forEach((h, i) => {
+        if (used.has(i)) return;
+        const s = scoreHeaderForField(h, field);
+        if (s >= minScore && s > bestScore) {
+          bestScore = s;
+          best = i;
+        }
+      });
+      if (best >= 0) {
+        map[field] = String(headers[best]).trim();
+        used.add(best);
+      }
+    }
+  }
+  return map;
+}
+
+/** Legacy helper — exact alias match only (no loose substring). */
 function pickCol(headers, aliases) {
   const norm = headers.map(normalizeHeader);
   for (const a of aliases) {
     const i = norm.indexOf(normalizeHeader(a));
     if (i >= 0) return i;
   }
-  for (const a of aliases) {
-    const na = normalizeHeader(a);
-    const i = norm.findIndex(h => h === na || h.includes(na) || na.includes(h));
-    if (i >= 0 && na.length >= 2) return i;
-  }
   return -1;
 }
+
 function setLoadStatus(msg) {
   document.getElementById("loadStatus").textContent = msg;
 }
@@ -1270,8 +1421,25 @@ function costCentersMatch(a, b) {
  * - `_export`: original cell values for write-back (numbers stay numbers; text stays text)
  * - POSTED_DATE / NOMINAL / COST_CENTRE / TXN_CURRENCY / FUNCTIONAL_AMOUNT:
  *   parsed copies used only for filter & sum — not for display/export
+ * Logical fields are resolved via fieldMap (logical → actual header name), so column order never matters.
  */
-function buildGlRow({ headers, values, displays, colIndex, id }) {
+function headerIndex(headers, name) {
+  if (!name) return -1;
+  const want = String(name).trim();
+  return (headers || []).findIndex(h => String(h || "").trim() === want);
+}
+
+function cellFromRowArrays(headers, values, displays, headerName) {
+  const i = headerIndex(headers, headerName);
+  if (i < 0) return { raw: "", disp: "" };
+  const raw = values[i];
+  const disp = displays && displays[i] != null && displays[i] !== ""
+    ? String(displays[i])
+    : (raw == null || raw === "" ? "" : String(raw));
+  return { raw: raw == null ? "" : raw, disp };
+}
+
+function buildGlRow({ headers, values, displays, fieldMap, id }) {
   const _display = {};
   const _export = {};
   headers.forEach((h, i) => {
@@ -1281,28 +1449,23 @@ function buildGlRow({ headers, values, displays, colIndex, id }) {
       ? String(displays[i])
       : (rawVal == null || rawVal === "" ? "" : String(rawVal));
     _display[h] = disp;
-    // Prefer original typed value for export; fall back to display text
     if (rawVal == null || rawVal === "") _export[h] = disp;
     else if (rawVal instanceof Date) _export[h] = disp || parseDateToISO(rawVal) || "";
     else _export[h] = rawVal;
   });
 
-  const di = colIndex.POSTED_DATE;
-  const ai = colIndex.NOMINAL;
-  const ci = colIndex.COST_CENTRE;
-  const mi = colIndex.FUNCTIONAL_AMOUNT;
-  const ccy = colIndex.TXN_CURRENCY;
+  const map = fieldMap || {};
+  const posted = cellFromRowArrays(headers, values, displays, map.POSTED_DATE);
+  const nom = cellFromRowArrays(headers, values, displays, map.NOMINAL);
+  const cc = cellFromRowArrays(headers, values, displays, map.COST_CENTRE);
+  const ccy = cellFromRowArrays(headers, values, displays, map.TXN_CURRENCY);
+  const amt = cellFromRowArrays(headers, values, displays, map.FUNCTIONAL_AMOUNT);
 
-  const postedRaw = di >= 0 ? values[di] : "";
-  const postedDisp = di >= 0 ? _display[headers[di]] : "";
-  const iso = parseDateToISO(postedRaw) || parseDateToISO(postedDisp) || "";
-
-  const amountRaw = mi >= 0 ? values[mi] : "";
-  const amountDisp = mi >= 0 ? _display[headers[mi]] : "";
-  let amountNum = typeof amountRaw === "number" && !Number.isNaN(amountRaw)
-    ? amountRaw
-    : parseAmount(amountRaw);
-  if (Number.isNaN(amountNum)) amountNum = parseAmount(amountDisp);
+  const iso = parseDateToISO(posted.raw) || parseDateToISO(posted.disp) || "";
+  let amountNum = typeof amt.raw === "number" && !Number.isNaN(amt.raw)
+    ? amt.raw
+    : parseAmount(amt.raw);
+  if (Number.isNaN(amountNum)) amountNum = parseAmount(amt.disp);
   if (Number.isNaN(amountNum)) amountNum = 0;
 
   return {
@@ -1310,13 +1473,44 @@ function buildGlRow({ headers, values, displays, colIndex, id }) {
     _display,
     _export,
     POSTED_DATE: iso,
-    NOMINAL: String((ai >= 0 ? values[ai] : "") ?? "").trim() || String(_display[headers[ai]] || "").trim(),
-    COST_CENTRE: String((ci >= 0 ? values[ci] : "") ?? "").trim() || String(_display[headers[ci]] || "").trim(),
-    TXN_CURRENCY: ccy >= 0
-      ? (String(values[ccy] ?? "").trim() || String(_display[headers[ccy]] || "").trim())
-      : "",
+    NOMINAL: String(nom.raw ?? "").trim() || String(nom.disp || "").trim(),
+    COST_CENTRE: String(cc.raw ?? "").trim() || String(cc.disp || "").trim(),
+    TXN_CURRENCY: String(ccy.raw ?? "").trim() || String(ccy.disp || "").trim(),
     FUNCTIONAL_AMOUNT: amountNum,
   };
+}
+
+/** Re-derive filter/sum fields after user changes column mapping. */
+function remapAllGlLogicalFields() {
+  for (const row of glRows) {
+    const postedH = glFieldMap.POSTED_DATE;
+    const nomH = glFieldMap.NOMINAL;
+    const ccH = glFieldMap.COST_CENTRE;
+    const ccyH = glFieldMap.TXN_CURRENCY;
+    const amtH = glFieldMap.FUNCTIONAL_AMOUNT;
+
+    const postedRaw = postedH && row._export ? row._export[postedH] : "";
+    const postedDisp = postedH && row._display ? row._display[postedH] : "";
+    row.POSTED_DATE = parseDateToISO(postedRaw) || parseDateToISO(postedDisp) || "";
+
+    const nomRaw = nomH && row._export ? row._export[nomH] : "";
+    const nomDisp = nomH && row._display ? row._display[nomH] : "";
+    row.NOMINAL = String(nomRaw ?? "").trim() || String(nomDisp || "").trim();
+
+    const ccRaw = ccH && row._export ? row._export[ccH] : "";
+    const ccDisp = ccH && row._display ? row._display[ccH] : "";
+    row.COST_CENTRE = String(ccRaw ?? "").trim() || String(ccDisp || "").trim();
+
+    const ccyRaw = ccyH && row._export ? row._export[ccyH] : "";
+    const ccyDisp = ccyH && row._display ? row._display[ccyH] : "";
+    row.TXN_CURRENCY = String(ccyRaw ?? "").trim() || String(ccyDisp || "").trim();
+
+    const amtRaw = amtH && row._export ? row._export[amtH] : "";
+    const amtDisp = amtH && row._display ? row._display[amtH] : "";
+    let amountNum = typeof amtRaw === "number" && !Number.isNaN(amtRaw) ? amtRaw : parseAmount(amtRaw);
+    if (Number.isNaN(amountNum)) amountNum = parseAmount(amtDisp);
+    row.FUNCTIONAL_AMOUNT = Number.isNaN(amountNum) ? 0 : amountNum;
+  }
 }
 
 function rowFromSeedObject(raw, id) {
@@ -1326,19 +1520,23 @@ function rowFromSeedObject(raw, id) {
     const v = raw[h];
     if (v == null || v === "") return "";
     if (typeof v === "number") {
-      // Seed demo only — real uploads use Excel/CSV original text
       return Number.isInteger(v) ? String(v) : v.toFixed(2);
     }
     return String(v);
   });
-  const colIndex = {
-    POSTED_DATE: headers.indexOf("POSTED_DATE"),
-    NOMINAL: headers.indexOf("NOMINAL"),
-    COST_CENTRE: headers.indexOf("COST_CENTRE"),
-    FUNCTIONAL_AMOUNT: headers.indexOf("FUNCTIONAL_AMOUNT"),
-    TXN_CURRENCY: headers.indexOf("TXN_CURRENCY"),
-  };
-  return buildGlRow({ headers, values, displays, colIndex, id });
+  return buildGlRow({
+    headers,
+    values,
+    displays,
+    fieldMap: {
+      POSTED_DATE: "POSTED_DATE",
+      NOMINAL: "NOMINAL",
+      COST_CENTRE: "COST_CENTRE",
+      TXN_CURRENCY: "TXN_CURRENCY",
+      FUNCTIONAL_AMOUNT: "FUNCTIONAL_AMOUNT",
+    },
+    id,
+  });
 }
 
 function loadVisibleCols() {
@@ -1692,31 +1890,94 @@ function clearFilters() {
   renderDataTable();
 }
 
+function mappedCoreHeaders() {
+  return CORE_GL_COLS.map(logical => glFieldMap[logical]).filter(h => h && glAllHeaders.includes(h));
+}
+
 function activeVisibleCols() {
-  // Keep CORE order first (only if present in file), then remaining headers in file order
+  const coreMapped = mappedCoreHeaders();
   const ordered = [
-    ...CORE_GL_COLS.filter(c => glAllHeaders.includes(c)),
-    ...glAllHeaders.filter(c => !CORE_GL_COLS.includes(c)),
+    ...coreMapped,
+    ...glAllHeaders.filter(c => !coreMapped.includes(c)),
   ];
   return ordered.filter(c => visibleColSet.has(c) && glAllHeaders.includes(c));
 }
 
 function renderColMenu() {
   const list = document.getElementById("colList");
+  const coreMapped = new Set(mappedCoreHeaders());
   const all = [
-    ...CORE_GL_COLS.filter(c => glAllHeaders.includes(c)),
-    ...glAllHeaders.filter(c => !CORE_GL_COLS.includes(c)),
+    ...mappedCoreHeaders(),
+    ...glAllHeaders.filter(c => !coreMapped.has(c)),
   ];
   const seen = new Set();
   const cols = all.filter(c => { if (seen.has(c)) return false; seen.add(c); return true; });
   list.innerHTML = cols.map(c => {
-    const core = CORE_GL_COLS.includes(c);
+    const core = coreMapped.has(c);
     const checked = visibleColSet.has(c) ? "checked" : "";
     return `<label class="col-item ${core ? "core" : ""}">
       <input type="checkbox" data-col="${escapeAttr(c)}" ${checked} />
       <span>${escapeHtml(c)}${core ? " (core)" : ""}</span>
     </label>`;
   }).join("");
+}
+
+function fillMapSelect(selId, selected) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const opts = ['<option value="">— not set —</option>']
+    .concat(glAllHeaders.map(h =>
+      `<option value="${escapeAttr(h)}" ${h === selected ? "selected" : ""}>${escapeHtml(h)}</option>`
+    ));
+  sel.innerHTML = opts.join("");
+}
+
+function renderColMapBar() {
+  fillMapSelect("mapPostedDate", glFieldMap.POSTED_DATE || "");
+  fillMapSelect("mapNominal", glFieldMap.NOMINAL || "");
+  fillMapSelect("mapCostCentre", glFieldMap.COST_CENTRE || "");
+  fillMapSelect("mapCurrency", glFieldMap.TXN_CURRENCY || "");
+  fillMapSelect("mapAmount", glFieldMap.FUNCTIONAL_AMOUNT || "");
+}
+
+function readColMapFromUI() {
+  return {
+    POSTED_DATE: document.getElementById("mapPostedDate")?.value || "",
+    NOMINAL: document.getElementById("mapNominal")?.value || "",
+    COST_CENTRE: document.getElementById("mapCostCentre")?.value || "",
+    TXN_CURRENCY: document.getElementById("mapCurrency")?.value || "",
+    FUNCTIONAL_AMOUNT: document.getElementById("mapAmount")?.value || "",
+  };
+}
+
+function onColMapChange() {
+  const next = readColMapFromUI();
+  // Prevent two logical fields pointing at the same header (except empty)
+  const used = new Set();
+  for (const [field, header] of Object.entries(next)) {
+    if (!header) continue;
+    if (used.has(header)) {
+      alert(`Column "${header}" is already used by another field. Pick a different header.`);
+      renderColMapBar();
+      return;
+    }
+    used.add(header);
+  }
+  glFieldMap = next;
+  // Ensure mapped core headers are visible in the grid
+  mappedCoreHeaders().forEach(h => visibleColSet.add(h));
+  saveVisibleCols();
+  remapAllGlLogicalFields();
+  // Clear stale filter text that came from wrong columns
+  document.getElementById("fAccount").value = "";
+  document.getElementById("fCostCenter").value = "";
+  document.getElementById("fCurrency").value = "";
+  refreshFilterOptions();
+  applyFilters();
+  renderColMenu();
+  setLoadStatus(
+    `Column mapping updated · Account←${glFieldMap.NOMINAL || "?"} · CC←${glFieldMap.COST_CENTRE || "?"} · CCY←${glFieldMap.TXN_CURRENCY || "?"}`
+  );
 }
 
 function renderGL() {
@@ -1840,7 +2101,7 @@ function updateCompare() {
 
 /* ========== Columns menu ========== */
 function setCoreCols() {
-  visibleColSet = new Set(CORE_GL_COLS.filter(c => glAllHeaders.includes(c)));
+  visibleColSet = new Set(mappedCoreHeaders());
   if (!visibleColSet.size) glAllHeaders.slice(0, 5).forEach(c => visibleColSet.add(c));
   saveVisibleCols();
   renderColMenu();
@@ -2108,31 +2369,24 @@ const IMPORT_ALIASES = {
 };
 
 function scoreImportHeaders(headers) {
-  const h = (headers || []).map(x => String(x ?? "").trim());
+  const map = detectGlFieldMap(headers);
   let score = 0;
-  if (pickCol(h, ["POSTED_DATE", "Posted Date"]) >= 0) score += 5;
-  else if (pickCol(h, ["Posting_Date", "Posting Date"]) >= 0) score += 2;
-  if (pickCol(h, ["NOMINAL"]) >= 0) score += 5;
-  else if (pickCol(h, ["Account", "Account_No", "Account Number"]) >= 0) score += 2;
-  if (pickCol(h, ["COST_CENTRE", "COST_CENTER"]) >= 0) score += 5;
-  else if (pickCol(h, ["Cost_Center", "Cost Center", "CC"]) >= 0) score += 2;
-  if (pickCol(h, ["FUNCTIONAL_AMOUNT", "Functional Amount"]) >= 0) score += 5;
-  else if (pickCol(h, ["Amount", "TXN_AMT"]) >= 0) score += 2;
-  if (pickCol(h, ["TXN_CURRENCY"]) >= 0) score += 3;
+  if (map.POSTED_DATE) score += scoreHeaderForField(map.POSTED_DATE, "POSTED_DATE") >= 80 ? 5 : 2;
+  if (map.NOMINAL) score += scoreHeaderForField(map.NOMINAL, "NOMINAL") >= 80 ? 5 : 2;
+  if (map.COST_CENTRE) score += scoreHeaderForField(map.COST_CENTRE, "COST_CENTRE") >= 80 ? 5 : 2;
+  if (map.FUNCTIONAL_AMOUNT) score += scoreHeaderForField(map.FUNCTIONAL_AMOUNT, "FUNCTIONAL_AMOUNT") >= 80 ? 5 : 2;
+  if (map.TXN_CURRENCY) score += scoreHeaderForField(map.TXN_CURRENCY, "TXN_CURRENCY") >= 80 ? 3 : 1;
   return score;
 }
 
 function findImportHeaderRow(matrix) {
-  let best = { idx: 0, score: -1, headers: matrix[0] || [] };
+  let best = { idx: 0, score: -1, headers: matrix[0] || [], fieldMap: {} };
   for (let r = 0; r < Math.min(matrix.length, 30); r++) {
     const h = (matrix[r] || []).map(x => String(x ?? "").trim());
+    const fieldMap = detectGlFieldMap(h);
     const score = scoreImportHeaders(h);
-    const hasCore =
-      pickCol(h, IMPORT_ALIASES.POSTED_DATE) >= 0 &&
-      pickCol(h, IMPORT_ALIASES.NOMINAL) >= 0 &&
-      pickCol(h, IMPORT_ALIASES.COST_CENTRE) >= 0 &&
-      pickCol(h, IMPORT_ALIASES.FUNCTIONAL_AMOUNT) >= 0;
-    if (hasCore && score > best.score) best = { idx: r, score, headers: h };
+    const hasCore = fieldMap.POSTED_DATE && fieldMap.NOMINAL && fieldMap.COST_CENTRE && fieldMap.FUNCTIONAL_AMOUNT;
+    if (hasCore && score > best.score) best = { idx: r, score, headers: h, fieldMap };
   }
   return best;
 }
@@ -2141,28 +2395,19 @@ function parseImportMatrix(matrix, sheetName, displayMatrix) {
   const found = findImportHeaderRow(matrix);
   const headerRowIdx = found.idx;
   const headers = found.headers.map(h => String(h ?? "").trim());
+  const fieldMap = found.fieldMap && Object.keys(found.fieldMap).length
+    ? found.fieldMap
+    : detectGlFieldMap(headers);
 
-  const di = pickCol(headers, IMPORT_ALIASES.POSTED_DATE);
-  const ai = pickCol(headers, IMPORT_ALIASES.NOMINAL);
-  const ci = pickCol(headers, IMPORT_ALIASES.COST_CENTRE);
-  const mi = pickCol(headers, IMPORT_ALIASES.FUNCTIONAL_AMOUNT);
-  const ccy = pickCol(headers, IMPORT_ALIASES.TXN_CURRENCY);
-
-  if (di < 0 || ai < 0 || ci < 0 || mi < 0) {
+  if (!fieldMap.POSTED_DATE || !fieldMap.NOMINAL || !fieldMap.COST_CENTRE || !fieldMap.FUNCTIONAL_AMOUNT) {
     throw new Error(
-      "GL report missing required columns (POSTED_DATE, NOMINAL, COST_CENTRE, FUNCTIONAL_AMOUNT)." +
-      (sheetName ? ` Sheet: ${sheetName}` : "")
+      "GL report missing required columns (need posting date, account/NOMINAL, cost centre, functional amount)." +
+      (sheetName ? ` Sheet: ${sheetName}` : "") +
+      `\nFound headers: ${headers.filter(Boolean).join(", ") || "(none)"}`
     );
   }
 
-  const colIndex = {
-    POSTED_DATE: di,
-    NOMINAL: ai,
-    COST_CENTRE: ci,
-    FUNCTIONAL_AMOUNT: mi,
-    TXN_CURRENCY: ccy,
-  };
-
+  const di = headerIndex(headers, fieldMap.POSTED_DATE);
   const out = [];
   for (let i = headerRowIdx + 1; i < matrix.length; i++) {
     const row = matrix[i];
@@ -2172,25 +2417,26 @@ function parseImportMatrix(matrix, sheetName, displayMatrix) {
       ? displayMatrix[i]
       : row.map(c => (c == null || c === "" ? "" : String(c)));
 
-    // Need a parseable posting date for filtering — skip only if neither value nor display parses
-    const iso = parseDateToISO(row[di]) || parseDateToISO(displays[di]);
+    const iso = di >= 0
+      ? (parseDateToISO(row[di]) || parseDateToISO(displays[di]))
+      : null;
     if (!iso) continue;
 
     out.push(buildGlRow({
       headers,
       values: row,
       displays,
-      colIndex,
+      fieldMap,
       id: nextGlId++,
     }));
   }
   if (!out.length) {
     throw new Error(
-      "GL report had headers but no usable data rows (check POSTED_DATE values)." +
+      "GL report had headers but no usable data rows (check posting date values)." +
       (sheetName ? ` Sheet: ${sheetName}` : "")
     );
   }
-  return { sheetName: sheetName || "CSV", rows: out, headers, headerScore: found.score };
+  return { sheetName: sheetName || "CSV", rows: out, headers, fieldMap, headerScore: found.score };
 }
 
 /** Read sheet preserving Excel displayed text (.w) and raw values (.v). */
@@ -2255,26 +2501,40 @@ function parseImportWorkbook(ab) {
 
 function loadGlParsed(parsed, fileName) {
   nextGlId = 0;
-  // Exact headers from the file only — do not invent columns
   glAllHeaders = (parsed.headers || []).filter(Boolean);
+  glFieldMap = parsed.fieldMap && Object.keys(parsed.fieldMap).length
+    ? { ...parsed.fieldMap }
+    : detectGlFieldMap(glAllHeaders);
   glRows = parsed.rows.map((r, i) => ({ ...r, _id: i }));
   nextGlId = glRows.length;
   selectedIds = new Set();
-  // Visible cols: keep prior choices that still exist; ensure current core defaults on
+
+  // Visible cols: prefer previously chosen that still exist + mapped core headers
   const next = new Set([...visibleColSet].filter(c => glAllHeaders.includes(c)));
-  CORE_GL_COLS.forEach(c => { if (glAllHeaders.includes(c)) next.add(c); });
-  if (!next.size) {
-    // Fall back to whatever the file has, preferring known core names
-    glAllHeaders.slice(0, 6).forEach(c => next.add(c));
-  }
+  mappedCoreHeaders().forEach(c => next.add(c));
+  if (!next.size) glAllHeaders.slice(0, 6).forEach(c => next.add(c));
   visibleColSet = next;
   saveVisibleCols();
+
+  remapAllGlLogicalFields();
+  renderColMapBar();
   refreshFilterOptions();
-  setLoadStatus(`GL report loaded: ${fileName} / ${parsed.sheetName} (${glRows.length} rows)`);
+  const mapSummary = [
+    glFieldMap.NOMINAL && `Account←${glFieldMap.NOMINAL}`,
+    glFieldMap.COST_CENTRE && `CC←${glFieldMap.COST_CENTRE}`,
+    glFieldMap.TXN_CURRENCY && `CCY←${glFieldMap.TXN_CURRENCY}`,
+  ].filter(Boolean).join(" · ");
+  setLoadStatus(
+    `GL report loaded: ${fileName} / ${parsed.sheetName} (${glRows.length} rows)` +
+    (mapSummary ? ` · ${mapSummary}` : "")
+  );
+  document.getElementById("fAccount").value = "";
+  document.getElementById("fCostCenter").value = "";
+  document.getElementById("fCurrency").value = "";
   if (activeRowIndex != null) applyFilters();
   else {
     document.getElementById("reviewTarget").textContent =
-      `GL loaded (${glRows.length} rows). Filter by date / Account / CC / Currency — Cadency optional.`;
+      `GL loaded (${glRows.length} rows). Check column mapping if Account/CC/Currency look wrong.`;
     showAllGlRows();
   }
   renderColMenu();
@@ -2454,6 +2714,10 @@ document.getElementById("fCurrency").addEventListener("change", applyFilters);
 document.getElementById("fDateTo").addEventListener("change", () => syncDateFromFromTo(true));
 document.getElementById("fDateFrom").addEventListener("change", applyFilters);
 document.getElementById("fTarget").addEventListener("input", updateCompare);
+
+["mapPostedDate", "mapNominal", "mapCostCentre", "mapCurrency", "mapAmount"].forEach(id => {
+  document.getElementById(id)?.addEventListener("change", onColMapChange);
+});
 
 document.querySelectorAll(".combo-clear").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -2702,6 +2966,7 @@ try {
 } catch (_) {}
 refreshFilterOptions();
 renderColMenu();
+renderColMapBar();
 renderDataTable();
 showAllGlRows();
 updateCompare();
