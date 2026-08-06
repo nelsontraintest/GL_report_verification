@@ -10,18 +10,23 @@
     Effective Date                  → POSTED_DATE   (MTD through period end)
     G/L Ending Balance              → FUNCTIONAL_AMOUNT
     Transaction Currency (CCY2) Code→ TXN_CURRENCY
+
+  Default GL columns shown:
+    POSTED_DATE, NOMINAL, COST_CENTRE, TXN_CURRENCY, FUNCTIONAL_AMOUNT
+  Extra Excel columns available via Columns menu.
+  Display/export keep original cell text from the upload; amounts/dates are parsed only for filter & sum.
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Cadency vs GL report Verification</title>
+<title>GL report Verification</title>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   :root {
-    --bg: #f3f5f7;
+    --bg: #eef1f4;
     --panel: #ffffff;
     --ink: #1a1a1a;
     --muted: #5c6570;
@@ -36,18 +41,20 @@
     --mismatch-bg: #fde8e7;
     --pending: #6b7280;
     --focus: #2563eb;
-    --drawer-w: 560px;
+    --highlight: #fff3bf;
+    --drawer-w: 720px;
     --splitter-w: 6px;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; }
+  html { scroll-behavior: smooth; }
+  html, body { margin: 0; }
   body {
     font-family: "Segoe UI", Calibri, "Helvetica Neue", Arial, sans-serif;
     font-size: 13px;
     color: var(--ink);
     background: var(--bg);
-    display: flex;
-    flex-direction: column;
+    min-height: 100vh;
+    /* One page scrollbar — content grows; no nested mini-windows */
   }
   button, input, select { font: inherit; }
   button {
@@ -59,7 +66,7 @@
     padding: 6px 10px;
   }
   button:hover { background: #f0f4f8; }
-  button:focus-visible, input:focus-visible, select:focus-visible, .cell-btn:focus-visible {
+  button:focus-visible, input:focus-visible, select:focus-visible, .cell-btn:focus-visible, .combo input:focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: 2px;
   }
@@ -70,6 +77,12 @@
   }
   button.primary:hover { filter: brightness(1.05); }
   button.ghost { background: transparent; }
+  button.soft {
+    background: #eef6ff;
+    border-color: #bfd4f0;
+    color: #174ea6;
+  }
+
   .topbar {
     display: flex;
     flex-wrap: wrap;
@@ -78,6 +91,9 @@
     padding: 10px 14px;
     background: var(--panel);
     border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 60;
   }
   .topbar h1 {
     font-size: 15px;
@@ -88,7 +104,7 @@
   }
   .topbar .help {
     color: var(--muted);
-    flex: 1 1 240px;
+    flex: 1 1 260px;
     min-width: 200px;
     line-height: 1.35;
   }
@@ -103,6 +119,11 @@
     background: #fff;
     cursor: pointer;
   }
+  .topbar label.file-btn.primary-file {
+    background: var(--header);
+    color: var(--header-ink);
+    border-color: var(--header);
+  }
   .topbar label.file-btn input { display: none; }
   .status-pill {
     font-size: 12px;
@@ -110,7 +131,7 @@
     padding: 4px 8px;
     border: 1px dashed var(--line);
     border-radius: 4px;
-    max-width: 360px;
+    max-width: 420px;
   }
   .map-note {
     width: 100%;
@@ -118,20 +139,34 @@
     color: var(--muted);
     line-height: 1.4;
   }
+
   .workspace {
-    flex: 1;
     display: grid;
-    grid-template-columns: minmax(280px, 1fr) var(--splitter-w) var(--drawer-w);
-    min-height: 0;
+    grid-template-columns: minmax(240px, 0.85fr) var(--splitter-w) var(--drawer-w);
+    align-items: start;
+    width: 100%;
   }
   .workspace.drawer-closed {
     grid-template-columns: 1fr 0 0;
   }
   .workspace.drawer-closed .splitter { display: none; }
+  .workspace.cadency-collapsed {
+    grid-template-columns: 48px var(--splitter-w) 1fr;
+  }
+  .workspace.cadency-collapsed .main { padding: 8px; }
+  .workspace.cadency-collapsed .cadency-body { display: none; }
+  .workspace.cadency-collapsed .panel-card .panel-head h2 {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: 12px;
+  }
   .main {
     min-width: 0;
-    overflow: auto;
-    padding: 14px;
+    padding: 12px;
+    /* Keep Cadency in view while scrolling long GL lists */
+    position: sticky;
+    top: var(--topbar-h, 0px);
+    align-self: start;
   }
   .splitter {
     position: relative;
@@ -140,21 +175,14 @@
     cursor: col-resize;
     touch-action: none;
     user-select: none;
+    align-self: stretch;
+    min-height: calc(100vh - var(--topbar-h, 0px));
   }
-  .splitter::after {
-    content: "";
-    position: absolute;
-    inset: 0 -4px;
-  }
+  .splitter::after { content: ""; position: absolute; inset: 0 -4px; }
   .splitter:hover,
   .splitter:focus-visible,
-  .splitter.dragging {
-    background: var(--focus);
-  }
-  .splitter:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: -1px;
-  }
+  .splitter.dragging { background: var(--focus); }
+  .splitter:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
   .splitter .grip {
     position: absolute;
     top: 50%;
@@ -169,11 +197,12 @@
   }
   body.resizing-panels { cursor: col-resize; user-select: none; }
   body.resizing-panels iframe { pointer-events: none; }
+
   .panel-card {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 6px;
-    overflow: hidden;
+    overflow: visible;
   }
   .panel-card .panel-head {
     display: flex;
@@ -189,13 +218,27 @@
     font-size: 13px;
     font-weight: 650;
   }
+  .panel-card .panel-head .tag {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #7a5b00;
+    background: #fff3cd;
+    border: 1px solid #f0e0a0;
+    border-radius: 999px;
+    padding: 1px 7px;
+    vertical-align: middle;
+  }
+  .cadency-body { overflow: visible; }
+
   table.data {
     width: 100%;
     border-collapse: collapse;
   }
   table.data th, table.data td {
     border-bottom: 1px solid var(--line);
-    padding: 8px 10px;
+    padding: 7px 9px;
     text-align: left;
     white-space: nowrap;
   }
@@ -207,8 +250,14 @@
     font-weight: 600;
     z-index: 1;
   }
+  #glTable th {
+    top: var(--topbar-h, 0px);
+    z-index: 25;
+    box-shadow: 0 1px 0 var(--line);
+  }
   table.data tbody tr:nth-child(even) { background: var(--row-alt); }
   table.data tbody tr.active-row { outline: 2px solid var(--focus); outline-offset: -2px; }
+  table.data tbody tr.selected-row { background: var(--highlight) !important; }
   table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .cell-btn {
     appearance: none;
@@ -233,25 +282,94 @@
   .badge.match { background: var(--match-bg); color: var(--match); }
   .badge.mismatch { background: var(--mismatch-bg); color: var(--mismatch); }
   .badge.pending { background: #eef1f4; color: var(--pending); }
+
   .drawer {
     border-left: 1px solid var(--line);
     background: var(--panel);
-    display: flex;
-    flex-direction: column;
     min-width: 0;
-    overflow: hidden;
+    /* Grow with table rows — page scrollbar handles overflow */
+    overflow: visible;
+    padding-bottom: 72px;
   }
-  .workspace.drawer-closed .drawer { border-left: none; width: 0; padding: 0; }
+  .workspace.drawer-closed .drawer { border-left: none; width: 0; padding: 0; overflow: hidden; }
   .drawer-head {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
     gap: 8px;
-    padding: 12px;
+    padding: 12px 12px 8px;
     border-bottom: 1px solid var(--line);
   }
-  .drawer-head h2 { margin: 0 0 4px; font-size: 14px; }
+  .drawer-head h2 { margin: 0 0 4px; font-size: 15px; color: var(--header); }
   .drawer-head .sub { color: var(--muted); line-height: 1.35; }
+  .steps {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .steps span {
+    font-size: 11px;
+    color: var(--muted);
+    background: #f3f6f9;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 8px;
+  }
+  .steps span strong { color: var(--ink); font-weight: 650; }
+
+  .gl-controls {
+    background: var(--panel);
+  }
+
+  /* Slim bottom dock — totals stay visible without stealing table height */
+  .sum-dock {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 55;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    align-items: center;
+    padding: 8px 14px;
+    background: rgba(255, 255, 255, 0.96);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 18px rgba(20, 40, 70, 0.08);
+    backdrop-filter: blur(6px);
+  }
+  .sum-dock .dock-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 88px;
+  }
+  .sum-dock .dock-item .lbl {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .sum-dock .dock-item .val {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+  }
+  .sum-dock .dock-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-left: auto;
+  }
+  .sum-dock .dock-hint {
+    font-size: 11px;
+    color: var(--muted);
+    max-width: 280px;
+    line-height: 1.3;
+  }
+
   .filters {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -266,35 +384,170 @@
     gap: 4px;
     color: var(--muted);
     font-size: 12px;
+    position: relative;
   }
-  .filters input {
+  .filters label.span2 { grid-column: 1 / -1; }
+  .filters input, .filters select {
     border: 1px solid var(--line);
     border-radius: 4px;
-    padding: 6px 8px;
+    padding: 7px 8px;
     color: var(--ink);
     background: #fff;
+  }
+  /* Primary fields she uses most: Date to, Account, Target */
+  .filters label.key-field,
+  .compare .metric.key-field {
+    background: #fff8e6;
+    border: 1px solid #e6c76a;
+    border-radius: 6px;
+    padding: 8px;
+    color: #5c4a12;
+    font-weight: 650;
+  }
+  .filters label.key-field .key-tag,
+  .compare .metric.key-field .key-tag {
+    display: inline-block;
+    margin-left: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #7a5b00;
+    background: #ffe9a8;
+    border: 1px solid #e6c76a;
+    border-radius: 999px;
+    padding: 1px 6px;
+    vertical-align: middle;
+  }
+  .filters label.key-field input,
+  .filters label.key-field .combo input,
+  .compare .metric.key-field input.target-input {
+    border-color: #d4b24a;
+    background: #fffef8;
+    font-weight: 650;
+  }
+  .filters label.key-field .cc-hint {
+    color: #8a7428;
   }
   .filter-actions {
     grid-column: 1 / -1;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+    align-items: center;
   }
+  .cc-hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  /* Searchable combobox */
+  .combo { position: relative; }
+  .combo input {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 7px 28px 7px 8px;
+    color: var(--ink);
+    background: #fff;
+  }
+  .combo .combo-clear {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    padding: 2px 6px;
+    font-size: 14px;
+    line-height: 1;
+  }
+  .combo .combo-clear:hover { color: var(--ink); background: transparent; }
+  .combo-list {
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 2px);
+    z-index: 30;
+    max-height: 220px;
+    overflow: auto;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+  }
+  .combo.open .combo-list { display: block; }
+  .combo-list button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-radius: 0;
+    border-bottom: 1px solid #eef1f4;
+    padding: 8px 10px;
+    background: #fff;
+  }
+  .combo-list button:hover,
+  .combo-list button.active { background: #eef6ff; }
+  .combo-list .empty-opt {
+    padding: 10px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
   .compare {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
     padding: 12px;
     border-bottom: 1px solid var(--line);
+    background: #fff;
   }
   .compare .metric {
     border: 1px solid var(--line);
     border-radius: 4px;
     padding: 8px;
-    background: #fff;
+    background: #fbfdff;
+    min-width: 0;
   }
-  .compare .metric .lbl { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
-  .compare .metric .val { font-weight: 650; font-variant-numeric: tabular-nums; }
+  .compare .metric.target {
+    background: #fffdf5;
+    border-color: #ecd98a;
+  }
+  .compare .metric.key-field {
+    background: #fff8e6;
+    border-color: #e6c76a;
+    box-shadow: inset 0 0 0 1px rgba(230, 199, 106, 0.35);
+  }
+  .compare .metric.key-field .lbl {
+    color: #5c4a12;
+    font-weight: 650;
+  }
+  .compare .metric .lbl { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .compare .metric .val {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-size: 15px;
+    word-break: break-all;
+  }
+  .compare .metric input.target-input {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 5px 6px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+  .compare-tip {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+
   .gl-tools {
     display: flex;
     flex-wrap: wrap;
@@ -302,9 +555,58 @@
     align-items: center;
     padding: 8px 12px;
     border-bottom: 1px solid var(--line);
+    position: relative;
+    background: #fff;
   }
   .gl-tools .counts { color: var(--muted); margin-left: auto; }
-  .gl-wrap { flex: 1; overflow: auto; min-height: 0; }
+  .col-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% - 4px);
+    left: 12px;
+    z-index: 40;
+    width: min(320px, calc(100% - 24px));
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.12);
+    padding: 10px;
+  }
+  .col-menu.open { display: block; }
+  .col-menu h3 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .col-menu .col-list {
+    display: grid;
+    gap: 4px;
+    max-height: 240px;
+    overflow: auto;
+  }
+  .col-menu label.col-item {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 6px;
+    border-radius: 4px;
+    color: var(--ink);
+    font-size: 12px;
+  }
+  .col-menu label.col-item:hover { background: #f3f6f9; }
+  .col-menu label.col-item.core { font-weight: 600; }
+  .col-menu .col-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+
+  .gl-wrap {
+    overflow: visible;
+    min-height: 200px;
+  }
   .empty {
     padding: 28px 16px;
     text-align: center;
@@ -325,11 +627,6 @@
     border: 1px solid var(--line);
     border-radius: 3px;
     padding: 4px 6px;
-  }
-  .cc-hint {
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 2px;
   }
   button.row-del {
     color: var(--mismatch);
@@ -409,47 +706,147 @@
     color: var(--ink);
   }
   @media (max-width: 960px) {
-    .workspace {
+    .workspace,
+    .workspace.cadency-collapsed {
       grid-template-columns: 1fr;
     }
     .splitter { display: none; }
+    .main {
+      position: static;
+    }
     .workspace:not(.drawer-closed) .drawer {
       position: fixed;
       inset: 0;
       z-index: 20;
       width: 100%;
       max-width: none;
+      overflow: auto; /* one scrollbar for the whole GL panel on small screens */
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 80px;
+    }
+    #glTable th {
+      top: 0;
     }
     .compare { grid-template-columns: 1fr 1fr; }
+    .workspace.cadency-collapsed .cadency-body { display: block; }
+    .workspace.cadency-collapsed .panel-card .panel-head h2 {
+      writing-mode: horizontal-tb;
+      transform: none;
+    }
+  }
+
+  /* Prompt helper modal */
+  .modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(20, 30, 45, 0.45);
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    width: min(640px, 100%);
+    max-height: min(88vh, 720px);
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #f8fafc;
+  }
+  .modal-head h2 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    color: var(--header);
+  }
+  .modal-head .modal-sub {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .modal-body {
+    padding: 14px 16px;
+    overflow: auto;
+    flex: 1;
+  }
+  .modal-steps {
+    margin: 0 0 12px;
+    padding-left: 18px;
+    color: var(--ink);
+    line-height: 1.45;
+    font-size: 13px;
+  }
+  .modal-steps li { margin-bottom: 4px; }
+  .prompt-box {
+    width: 100%;
+    min-height: 280px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink);
+    background: #fbfcfd;
+    resize: vertical;
+  }
+  .modal-foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+    background: #fff;
+  }
+  .modal-foot .copy-status {
+    font-size: 12px;
+    color: var(--match);
+    min-height: 1.2em;
   }
 </style>
 </head>
 <body>
   <header class="topbar">
-    <h1>Cadency vs GL report Verification</h1>
+    <h1>GL report Verification</h1>
     <div class="help">
-      Effective Date = MTD through period end (e.g. 06-30-2026 ⇒ POSTED_DATE 06-01…06-30).
-      Click Account or CC, select import rows, compare sum of FUNCTIONAL_AMOUNT to G/L Ending Balance.
-      Currency and smart Cost Centre matching are included.
+      <strong>Main path:</strong> upload GL → filter → check total → scroll or <em>Export filtered GL</em>.
+      Cadency is optional.
     </div>
     <div class="actions">
-      <label class="file-btn">Cadency image / CSV
-        <input type="file" id="imageDataInput" accept=".csv,text/csv,text/plain,image/*,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" />
-      </label>
-      <label class="file-btn">GL report (.xlsx / CSV)
+      <label class="file-btn primary-file">Upload GL report
         <input type="file" id="importInput" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
       </label>
-      <button type="button" id="btnExport" class="primary">Export results CSV</button>
-      <button type="button" id="btnToggleDrawer" class="ghost">Toggle panel</button>
+      <label class="file-btn">Cadency (optional)
+        <input type="file" id="imageDataInput" accept=".csv,text/csv,text/plain,image/*,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" />
+      </label>
+      <button type="button" id="btnShowPromptTop" class="ghost" title="Prompt for company AI chatbot">AI extract prompt</button>
+      <button type="button" id="btnExportGl" class="primary">Export filtered GL</button>
+      <button type="button" id="btnExportCadency" class="ghost" title="Export Cadency check results">Export Cadency CSV</button>
+      <button type="button" id="btnToggleCadency" class="ghost">Hide Cadency</button>
+      <button type="button" id="btnToggleDrawer" class="ghost">Toggle GL panel</button>
       <button type="button" id="btnResetSplit" class="ghost" title="Reset panel widths">Reset split</button>
-      <span class="status-pill" id="loadStatus">Demo seed loaded — upload your files anytime</span>
+      <span class="status-pill" id="loadStatus">Demo seed loaded — upload your GL report anytime</span>
     </div>
     <div class="map-note">
-      Mapping: Account→NOMINAL · CC→COST_CENTRE · Effective Date→POSTED_DATE ·
-      G/L Ending Balance→FUNCTIONAL_AMOUNT · Transaction Currency (CCY2) Code→TXN_CURRENCY.
-      Cost Centre smart match example: HB00214402 ↔ 0100214402 (digit / suffix).
-      Drag the vertical separator to resize panels · double-click separator to reset.
-      Image OCR needs internet once (Tesseract.js CDN); always review/edit extracted rows before locking.
+      Core GL columns: POSTED_DATE · NOMINAL · COST_CENTRE · TXN_CURRENCY · FUNCTIONAL_AMOUNT.
+      Display and export keep original Excel/CSV cell text. Amounts/dates are parsed only for filtering and totals.
+      Use <em>Columns</em> to show/hide extra fields. Export writes filtered rows with all original columns (plus highlight).
+      Cadency mapping: Account→NOMINAL · CC→COST_CENTRE · Effective Date→POSTED_DATE (MTD) · G/L Ending Balance→FUNCTIONAL_AMOUNT.
     </div>
   </header>
 
@@ -457,41 +854,46 @@
     <main class="main">
       <div class="panel-card">
         <div class="panel-head">
-          <h2>Cadency</h2>
-          <button type="button" id="btnEditToggle">Edit table</button>
+          <h2>Cadency <span class="tag">optional</span></h2>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button type="button" id="btnShowPrompt" class="soft" title="Prompt for company AI chatbot to turn Cadency image into CSV">AI image → CSV prompt</button>
+            <button type="button" id="btnEditToggle">Edit table</button>
+          </div>
         </div>
-        <div class="image-preview" id="imagePreview">
-          <img id="imagePreviewImg" alt="Uploaded Cadency image preview" />
-          <div class="meta" id="imagePreviewMeta"></div>
-        </div>
-        <div class="ocr-progress" id="ocrProgress">
-          <div id="ocrProgressText">Extracting table from image…</div>
-          <div class="bar"><span id="ocrProgressBar"></span></div>
-        </div>
-        <div class="edit-bar" id="editBar" hidden>
-          Editing rows. OCR can misread cells — fix values, then lock.
-          <button type="button" id="btnAddRow">Add row</button>
-          <button type="button" id="btnLockTable" class="primary">Lock table</button>
-        </div>
-        <details class="ocr-raw" id="ocrRawDetails" hidden>
-          <summary>Raw OCR text (debug)</summary>
-          <pre id="ocrRawText"></pre>
-        </details>
-        <div style="overflow:auto; max-height: calc(100vh - 160px);">
-          <table class="data" id="dataTable">
-            <thead>
-              <tr>
-                <th>Effective Date</th>
-                <th>Account</th>
-                <th>CC</th>
-                <th>Currency</th>
-                <th class="num">G/L Ending Balance</th>
-                <th>Result</th>
-                <th class="actions" id="actionsHead" hidden>Actions</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+        <div class="cadency-body">
+          <div class="image-preview" id="imagePreview">
+            <img id="imagePreviewImg" alt="Uploaded Cadency image preview" />
+            <div class="meta" id="imagePreviewMeta"></div>
+          </div>
+          <div class="ocr-progress" id="ocrProgress">
+            <div id="ocrProgressText">Extracting table from image…</div>
+            <div class="bar"><span id="ocrProgressBar"></span></div>
+          </div>
+          <div class="edit-bar" id="editBar" hidden>
+            Editing rows. OCR can misread cells — fix values, then lock.
+            <button type="button" id="btnAddRow">Add row</button>
+            <button type="button" id="btnLockTable" class="primary">Lock table</button>
+          </div>
+          <details class="ocr-raw" id="ocrRawDetails" hidden>
+            <summary>Raw OCR text (debug)</summary>
+            <pre id="ocrRawText"></pre>
+          </details>
+          <div style="overflow:auto;">
+            <table class="data" id="dataTable">
+              <thead>
+                <tr>
+                  <th>Effective Date</th>
+                  <th>Account</th>
+                  <th>CC</th>
+                  <th>Currency</th>
+                  <th class="num">G/L Ending Balance</th>
+                  <th>Result</th>
+                  <th class="actions" id="actionsHead" hidden>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </main>
@@ -503,73 +905,174 @@
       aria-orientation="vertical"
       aria-label="Resize panels"
       aria-valuemin="280"
-      aria-valuemax="900"
+      aria-valuemax="1100"
       tabindex="0"
       title="Drag to resize · double-click to reset"
     ><span class="grip" aria-hidden="true"></span></div>
 
-    <aside class="drawer" id="drawer" aria-label="Import filter panel">
+    <aside class="drawer" id="drawer" aria-label="GL report filter panel">
       <div class="drawer-head">
         <div>
-          <h2>GL report filter &amp; compare</h2>
-          <div class="sub" id="reviewTarget">Select a Cadency Account or CC.</div>
+          <h2>GL report</h2>
+          <div class="sub" id="reviewTarget">Upload a GL report, then filter by date / account / CC / currency.</div>
+          <div class="steps">
+            <span><strong>1</strong> Date to + Account</span>
+            <span><strong>2</strong> Check Filtered total vs Target</span>
+            <span><strong>3</strong> Optional: CC / Currency</span>
+          </div>
         </div>
         <button type="button" id="btnCloseDrawer" class="ghost" aria-label="Close panel">Close</button>
       </div>
 
-      <div class="filters">
-        <label>Date from (POSTED_DATE)<input type="date" id="fDateFrom" /></label>
-        <label>Date to (POSTED_DATE)<input type="date" id="fDateTo" /></label>
-        <label>Account / NOMINAL<input type="text" id="fAccount" placeholder="e.g. 100214402" /></label>
-        <label>CC / COST_CENTRE
-          <input type="text" id="fCostCenter" placeholder="e.g. HB00214402" />
-          <span class="cc-hint">Smart match on digits / suffix</span>
-        </label>
-        <label>Currency / TXN_CURRENCY<input type="text" id="fCurrency" placeholder="e.g. USD" /></label>
-        <div class="filter-actions">
-          <button type="button" id="btnApply" class="primary">Apply filters</button>
-          <button type="button" id="btnClearAccount">Clear Account</button>
-          <button type="button" id="btnClearCC">Clear CC</button>
-          <button type="button" id="btnClearCcy">Clear Currency</button>
-          <button type="button" id="btnResetResult">Reset row check</button>
+      <div class="gl-controls" id="glControls">
+        <div class="filters">
+          <label class="key-field">Date to <span class="key-tag">Key</span>
+            <span class="cc-hint" style="display:block;margin:0;font-weight:500">= Effective Date / period end · Date from auto-fills</span>
+            <input type="date" id="fDateTo" />
+          </label>
+          <label>Date from <span class="cc-hint" style="display:inline;margin:0">(auto: month start)</span>
+            <input type="date" id="fDateFrom" />
+          </label>
+
+          <label class="key-field">Account (NOMINAL) <span class="key-tag">Key</span>
+            <div class="combo" id="comboAccount">
+              <input type="text" id="fAccount" placeholder="Type to search…" autocomplete="off" />
+              <button type="button" class="combo-clear" data-clear="account" aria-label="Clear account">×</button>
+              <div class="combo-list" id="listAccount" role="listbox"></div>
+            </div>
+          </label>
+
+          <label>CC (COST_CENTRE)
+            <div class="combo" id="comboCC">
+              <input type="text" id="fCostCenter" placeholder="Type to search…" autocomplete="off" />
+              <button type="button" class="combo-clear" data-clear="cc" aria-label="Clear cost centre">×</button>
+              <div class="combo-list" id="listCC" role="listbox"></div>
+            </div>
+            <span class="cc-hint">Smart match on digits / suffix (e.g. HB00214402 ↔ 0100214402)</span>
+          </label>
+
+          <label>Currency
+            <select id="fCurrency">
+              <option value="">All currencies</option>
+            </select>
+          </label>
+
+          <div class="filter-actions">
+            <button type="button" id="btnApply" class="primary">Apply filters</button>
+            <button type="button" id="btnClearFilters">Clear filters</button>
+            <button type="button" id="btnSelectAll" class="soft">Select all visible</button>
+            <button type="button" id="btnClearSel">Clear selection</button>
+            <button type="button" id="btnResetResult" class="ghost">Reset Cadency result</button>
+          </div>
         </div>
-      </div>
 
-      <div class="compare" id="compareBox">
-        <div class="metric"><div class="lbl">Expected (G/L Ending Balance)</div><div class="val" id="mExpected">—</div></div>
-        <div class="metric"><div class="lbl">Selected sum (FUNCTIONAL_AMOUNT)</div><div class="val" id="mSelected">—</div></div>
-        <div class="metric"><div class="lbl">Delta</div><div class="val" id="mDelta">—</div></div>
-        <div class="metric"><div class="lbl">Status</div><div class="val" id="mStatus"><span class="badge pending">Pending</span></div></div>
-      </div>
+        <div class="compare" id="compareBox">
+          <div class="metric">
+            <div class="lbl">Filtered total</div>
+            <div class="val" id="mVisible">—</div>
+          </div>
+          <div class="metric">
+            <div class="lbl">Selected total</div>
+            <div class="val" id="mSelected">—</div>
+          </div>
+          <div class="metric target key-field">
+            <div class="lbl">Target amount <span class="key-tag">Key</span></div>
+            <input type="text" class="target-input" id="fTarget" placeholder="e.g. 12500.00" inputmode="decimal" />
+          </div>
+          <div class="metric">
+            <div class="lbl">Difference</div>
+            <div class="val" id="mDelta">—</div>
+          </div>
+          <div class="metric">
+            <div class="lbl">Status</div>
+            <div class="val" id="mStatus"><span class="badge pending">Pending</span></div>
+          </div>
+          <div class="compare-tip" id="compareTip">
+            Tip: check the total here, then scroll the list freely.
+            For a long list, use <strong>Export filtered GL</strong> (yellow highlight, all columns) — easier in Excel.
+          </div>
+        </div>
 
-      <div class="gl-tools">
-        <button type="button" id="btnSelectAll">Select all visible</button>
-        <button type="button" id="btnClearSel">Clear selection</button>
-        <span class="counts" id="glCounts">0 visible · 0 selected</span>
+        <div class="gl-tools">
+          <button type="button" id="btnColumns">Columns…</button>
+          <button type="button" id="btnUseVisible" class="soft" title="Copy filtered total into Target">Use filtered as target</button>
+          <button type="button" id="btnUseSelected" class="soft" title="Copy selected total into Target">Use selected as target</button>
+          <span class="counts" id="glCounts">0 visible · 0 selected</span>
+          <div class="col-menu" id="colMenu" role="dialog" aria-label="Show or hide columns">
+            <h3>Show / hide columns</h3>
+            <div class="col-list" id="colList"></div>
+            <div class="col-actions">
+              <button type="button" id="btnColsCore">Core only</button>
+              <button type="button" id="btnColsAll">Show all</button>
+              <button type="button" id="btnColsDone" class="primary">Done</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="gl-wrap">
         <table class="data" id="glTable">
-          <thead>
-            <tr>
-              <th style="width:36px"><input type="checkbox" id="chkAll" aria-label="Select all visible" /></th>
-              <th>POSTED_DATE</th>
-              <th>NOMINAL</th>
-              <th>COST_CENTRE</th>
-              <th>TXN_CURRENCY</th>
-              <th>JOURNAL_CATEGORY</th>
-              <th class="num">FUNCTIONAL_AMOUNT</th>
-            </tr>
-          </thead>
+          <thead><tr></tr></thead>
           <tbody></tbody>
         </table>
-        <div class="empty" id="glEmpty">Upload GL report (.xlsx/.csv). Rows appear here; click a Cadency Account or CC to filter &amp; verify.</div>
+        <div class="empty" id="glEmpty">Upload a GL report (.xlsx / CSV). Then use the filters above.</div>
       </div>
     </aside>
   </div>
 
+  <div class="sum-dock" id="sumDock" aria-label="Running totals">
+    <div class="dock-item">
+      <span class="lbl">Filtered</span>
+      <span class="val" id="dockVisible">—</span>
+    </div>
+    <div class="dock-item">
+      <span class="lbl">Selected</span>
+      <span class="val" id="dockSelected">—</span>
+    </div>
+    <div class="dock-item">
+      <span class="lbl">Difference</span>
+      <span class="val" id="dockDelta">—</span>
+    </div>
+    <div class="dock-item">
+      <span class="lbl">Status</span>
+      <span class="val" id="dockStatus"><span class="badge pending">Pending</span></span>
+    </div>
+    <div class="dock-hint">Scroll freely to review rows. Prefer Export for long lists.</div>
+    <div class="dock-actions">
+      <button type="button" id="btnDockFilters" class="ghost">↑ Filters</button>
+      <button type="button" id="btnDockExport" class="primary">Export filtered GL</button>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="promptModal" role="dialog" aria-modal="true" aria-labelledby="promptModalTitle" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="promptModalTitle">Cadency image → CSV prompt</h2>
+          <p class="modal-sub">For your company AI chatbot. Attach the Cadency screenshot, paste this prompt, then upload the CSV here.</p>
+        </div>
+        <button type="button" id="btnClosePrompt" class="ghost" aria-label="Close">Close</button>
+      </div>
+      <div class="modal-body">
+        <ol class="modal-steps">
+          <li>Open the company AI chatbot.</li>
+          <li>Attach the Cadency table image.</li>
+          <li>Paste the prompt below (Copy prompt).</li>
+          <li>Save the chatbot’s CSV reply, then use <strong>Cadency (optional)</strong> to upload that CSV.</li>
+        </ol>
+        <label for="promptText" class="cc-hint" style="display:block;margin-bottom:6px;">Prompt text</label>
+        <textarea id="promptText" class="prompt-box" readonly spellcheck="false"></textarea>
+      </div>
+      <div class="modal-foot">
+        <button type="button" id="btnCopyPrompt" class="primary">Copy prompt</button>
+        <button type="button" id="btnClosePrompt2" class="ghost">Close</button>
+        <span class="copy-status" id="copyStatus" aria-live="polite"></span>
+      </div>
+    </div>
+  </div>
+
 <script>
-/* ========== Demo seed (realistic column mapping) ========== */
+/* ========== Demo seed ========== */
 const SEED_DATA_TABLE = [
   { Effective_Date: "2026-06-30", Account: "100214402", CC: "HB00214402", Currency: "USD", Amount: 12500.00, Check_Result: "", BU: "01", Name: "Salaries" },
   { Effective_Date: "2026-06-30", Account: "100214402", CC: "HB00214501", Currency: "USD", Amount: 8300.00, Check_Result: "", BU: "01", Name: "Salaries" },
@@ -580,54 +1083,72 @@ const SEED_DATA_TABLE = [
   { Effective_Date: "2026-06-30", Account: "100400200", CC: "HB00400200", Currency: "USD", Amount: 3200.00, Check_Result: "", BU: "01", Name: "Fees" },
 ];
 
-const SEED_IMPORT = [
-  { POSTED_DATE: "2026-05-28", NOMINAL: "100214402", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 999.99, JOURNAL_CATEGORY: "Manual", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-05-28", NOMINAL: "100214402", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 999.99, JOURNAL_CATEGORY: "Manual", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-02", NOMINAL: "100215010", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3318.83, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-03", NOMINAL: "100215010", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 217.89, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-04", NOMINAL: "100214402", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2247.76, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-04", NOMINAL: "100214501", COST_CENTRE: "0100300100", TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 773.84, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-05", NOMINAL: "100214402", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3102.40, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-06", NOMINAL: "100214501", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1888.12, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-08", NOMINAL: "100400200", COST_CENTRE: "0100400200", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 900.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-10", NOMINAL: "100214402", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 4012.50, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-11", NOMINAL: "100215010", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2201.17, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-12", NOMINAL: "100214501", COST_CENTRE: "0100300100", TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 976.66, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-13", NOMINAL: "100214402", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2897.60, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-14", NOMINAL: "100214501", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 955.88, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-15", NOMINAL: "100215010", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 498.33, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-16", NOMINAL: "100400200", COST_CENTRE: "0100400200", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1034.06, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-18", NOMINAL: "100214402", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3124.89, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-19", NOMINAL: "100215010", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1980.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-20", NOMINAL: "100214501", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1256.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-21", NOMINAL: "100214402", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2300.00, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-22", NOMINAL: "100215010", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2100.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-23", NOMINAL: "100214501", COST_CENTRE: "0100300100", TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 1000.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-24", NOMINAL: "100214402", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3114.85, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-25", NOMINAL: "100400200", COST_CENTRE: "0100400200", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1265.94, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-26", NOMINAL: "100215010", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 560.00, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-27", NOMINAL: "100214402", COST_CENTRE: "0100214501", TXN_CURRENCY: "EUR", FUNCTIONAL_AMOUNT: 500.00, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-06-28", NOMINAL: "100215010", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 244.03, JOURNAL_CATEGORY: "AP", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-07-02", NOMINAL: "100214402", COST_CENTRE: "0100214402", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 888.88, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
-  { POSTED_DATE: "2026-07-02", NOMINAL: "100214402", COST_CENTRE: "0100214501", TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 888.88, JOURNAL_CATEGORY: "Payroll", LEGAL_ENTITY: "01" },
+const SEED_IMPORT_RAW = [
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214402", GL_DATE: "2026-05-28", POSTED_DATE: "2026-05-28", ACCOUNTING_DATE: "2026-05-28", TXN_AMT: 999.99, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 999.99, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Manual" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100214402", GL_DATE: "2026-05-28", POSTED_DATE: "2026-05-28", ACCOUNTING_DATE: "2026-05-28", TXN_AMT: 999.99, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 999.99, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Manual" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100215010", GL_DATE: "2026-06-02", POSTED_DATE: "2026-06-02", ACCOUNTING_DATE: "2026-06-02", TXN_AMT: 3318.83, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3318.83, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100215010", GL_DATE: "2026-06-03", POSTED_DATE: "2026-06-03", ACCOUNTING_DATE: "2026-06-03", TXN_AMT: 217.89, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 217.89, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214402", GL_DATE: "2026-06-04", POSTED_DATE: "2026-06-04", ACCOUNTING_DATE: "2026-06-04", TXN_AMT: 2247.76, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2247.76, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100300100", NOMINAL: "100214501", GL_DATE: "2026-06-04", POSTED_DATE: "2026-06-04", ACCOUNTING_DATE: "2026-06-04", TXN_AMT: 773.84, TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 773.84, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100214402", GL_DATE: "2026-06-05", POSTED_DATE: "2026-06-05", ACCOUNTING_DATE: "2026-06-05", TXN_AMT: 3102.40, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3102.40, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214501", GL_DATE: "2026-06-06", POSTED_DATE: "2026-06-06", ACCOUNTING_DATE: "2026-06-06", TXN_AMT: 1888.12, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1888.12, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100400200", NOMINAL: "100400200", GL_DATE: "2026-06-08", POSTED_DATE: "2026-06-08", ACCOUNTING_DATE: "2026-06-08", TXN_AMT: 900.00, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 900.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214402", GL_DATE: "2026-06-10", POSTED_DATE: "2026-06-10", ACCOUNTING_DATE: "2026-06-10", TXN_AMT: 4012.50, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 4012.50, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100215010", GL_DATE: "2026-06-11", POSTED_DATE: "2026-06-11", ACCOUNTING_DATE: "2026-06-11", TXN_AMT: 2201.17, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2201.17, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100300100", NOMINAL: "100214501", GL_DATE: "2026-06-12", POSTED_DATE: "2026-06-12", ACCOUNTING_DATE: "2026-06-12", TXN_AMT: 976.66, TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 976.66, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100214402", GL_DATE: "2026-06-13", POSTED_DATE: "2026-06-13", ACCOUNTING_DATE: "2026-06-13", TXN_AMT: 2897.60, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2897.60, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214501", GL_DATE: "2026-06-14", POSTED_DATE: "2026-06-14", ACCOUNTING_DATE: "2026-06-14", TXN_AMT: 955.88, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 955.88, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100215010", GL_DATE: "2026-06-15", POSTED_DATE: "2026-06-15", ACCOUNTING_DATE: "2026-06-15", TXN_AMT: 498.33, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 498.33, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100400200", NOMINAL: "100400200", GL_DATE: "2026-06-16", POSTED_DATE: "2026-06-16", ACCOUNTING_DATE: "2026-06-16", TXN_AMT: 1034.06, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1034.06, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214402", GL_DATE: "2026-06-18", POSTED_DATE: "2026-06-18", ACCOUNTING_DATE: "2026-06-18", TXN_AMT: 3124.89, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3124.89, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100215010", GL_DATE: "2026-06-19", POSTED_DATE: "2026-06-19", ACCOUNTING_DATE: "2026-06-19", TXN_AMT: 1980.00, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1980.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214501", GL_DATE: "2026-06-20", POSTED_DATE: "2026-06-20", ACCOUNTING_DATE: "2026-06-20", TXN_AMT: 1256.00, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1256.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100214402", GL_DATE: "2026-06-21", POSTED_DATE: "2026-06-21", ACCOUNTING_DATE: "2026-06-21", TXN_AMT: 2300.00, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2300.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100215010", GL_DATE: "2026-06-22", POSTED_DATE: "2026-06-22", ACCOUNTING_DATE: "2026-06-22", TXN_AMT: 2100.00, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 2100.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100300100", NOMINAL: "100214501", GL_DATE: "2026-06-23", POSTED_DATE: "2026-06-23", ACCOUNTING_DATE: "2026-06-23", TXN_AMT: 1000.00, TXN_CURRENCY: "HKD", FUNCTIONAL_AMOUNT: 1000.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214402", GL_DATE: "2026-06-24", POSTED_DATE: "2026-06-24", ACCOUNTING_DATE: "2026-06-24", TXN_AMT: 3114.85, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 3114.85, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100400200", NOMINAL: "100400200", GL_DATE: "2026-06-25", POSTED_DATE: "2026-06-25", ACCOUNTING_DATE: "2026-06-25", TXN_AMT: 1265.94, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 1265.94, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100215010", GL_DATE: "2026-06-26", POSTED_DATE: "2026-06-26", ACCOUNTING_DATE: "2026-06-26", TXN_AMT: 560.00, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 560.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100214402", GL_DATE: "2026-06-27", POSTED_DATE: "2026-06-27", ACCOUNTING_DATE: "2026-06-27", TXN_AMT: 500.00, TXN_CURRENCY: "EUR", FUNCTIONAL_AMOUNT: 500.00, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100215010", GL_DATE: "2026-06-28", POSTED_DATE: "2026-06-28", ACCOUNTING_DATE: "2026-06-28", TXN_AMT: 244.03, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 244.03, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "AP" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214402", NOMINAL: "100214402", GL_DATE: "2026-07-02", POSTED_DATE: "2026-07-02", ACCOUNTING_DATE: "2026-07-02", TXN_AMT: 888.88, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 888.88, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+  { LEGAL_ENTITY: "01", SERVICE: "", COST_CENTRE: "0100214501", NOMINAL: "100214402", GL_DATE: "2026-07-02", POSTED_DATE: "2026-07-02", ACCOUNTING_DATE: "2026-07-02", TXN_AMT: 888.88, TXN_CURRENCY: "USD", FUNCTIONAL_AMOUNT: 888.88, FUNCTIONAL_CURRENCY: "USD", JOURNAL_CATEGORY: "Payroll" },
+];
+
+const CORE_GL_COLS = [
+  "POSTED_DATE",
+  "NOMINAL",
+  "COST_CENTRE",
+  "TXN_CURRENCY",
+  "FUNCTIONAL_AMOUNT",
+];
+const SEED_HEADERS = [
+  "LEGAL_ENTITY", "SERVICE", "COST_CENTRE", "NOMINAL", "GL_DATE", "POSTED_DATE",
+  "ACCOUNTING_DATE", "TXN_AMT", "TXN_CURRENCY", "FUNCTIONAL_AMOUNT", "FUNCTIONAL_CURRENCY", "JOURNAL_CATEGORY",
 ];
 
 /* ========== State ========== */
-const DEFAULT_DRAWER_W = 560;
-const MIN_MAIN_W = 280;
-const MIN_DRAWER_W = 320;
+const DEFAULT_DRAWER_W = 720;
+const MIN_MAIN_W = 220;
+const MIN_DRAWER_W = 380;
 const SPLIT_STORAGE_KEY = "glVerifier.drawerWidth";
+const COLS_STORAGE_KEY = "glVerifier.visibleCols";
+const CADENCY_COLLAPSE_KEY = "glVerifier.cadencyCollapsed";
 
 let dataTable = structuredClone(SEED_DATA_TABLE);
-let glRows = SEED_IMPORT.map((r, i) => ({ ...r, _id: i }));
+let glAllHeaders = [...SEED_HEADERS];
+let glRows = SEED_IMPORT_RAW.map((raw, i) => rowFromSeedObject(raw, i));
 let nextGlId = glRows.length;
+let visibleColSet = loadVisibleCols();
 let editing = false;
 let drawerOpen = true;
+let cadencyCollapsed = false;
 let activeRowIndex = null;
 let selectedIds = new Set();
 let visibleIds = [];
 let ocrWorker = null;
 let imageObjectUrl = null;
+let compareMode = "filtered"; // "filtered" | "selected"
 
 /* ========== Utils ========== */
 function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
@@ -669,6 +1190,19 @@ function monthStart(iso) {
   const [y, m] = iso.split("-").map(Number);
   return `${y}-${String(m).padStart(2,"0")}-01`;
 }
+
+/** Date to = period end (Effective Date). Date from = first day of that month (MTD). */
+function syncDateFromFromTo(apply = false) {
+  const to = document.getElementById("fDateTo").value;
+  const fromEl = document.getElementById("fDateFrom");
+  if (!to) {
+    // Keep Date from as-is when Date to cleared (user may still want a from-only filter)
+    if (apply) applyFilters();
+    return;
+  }
+  fromEl.value = monthStart(to);
+  if (apply) applyFilters();
+}
 function normalizeHeader(h) {
   return String(h || "").trim().toLowerCase().replace(/[\s_\-\/().]+/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -678,7 +1212,6 @@ function pickCol(headers, aliases) {
     const i = norm.indexOf(normalizeHeader(a));
     if (i >= 0) return i;
   }
-  // loose contains fallback for longer headers
   for (const a of aliases) {
     const na = normalizeHeader(a);
     const i = norm.findIndex(h => h === na || h.includes(na) || na.includes(h));
@@ -707,36 +1240,129 @@ function fmtDisplayDate(iso) {
 function normalizeCurrency(v) {
   return String(v ?? "").trim().toUpperCase();
 }
+function cellDisplay(v) {
+  if (v == null) return "";
+  if (typeof v === "number" && !Number.isInteger(v)) return round2(v).toFixed(2);
+  return String(v);
+}
 
-/**
- * Smart COST_CENTRE match.
- * Exact alphanumeric match, digit equality (ignore leading zeros),
- * or suffix match on digit strings (e.g. HB00214402 ↔ 0100214402).
- */
 function costCentersMatch(a, b) {
   if (a == null || b == null || a === "" || b === "") return false;
   const na = String(a).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   const nb = String(b).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (na === nb) return true;
-
   const da = String(a).replace(/\D/g, "");
   const db = String(b).replace(/\D/g, "");
   if (!da || !db) return false;
-
   const za = da.replace(/^0+/, "") || "0";
   const zb = db.replace(/^0+/, "") || "0";
   if (za === zb) return true;
-
   const minLen = Math.min(da.length, db.length);
   if (minLen >= 6 && (da.endsWith(db) || db.endsWith(da))) return true;
-
   const minZ = Math.min(za.length, zb.length);
   if (minZ >= 6 && (za.endsWith(zb) || zb.endsWith(za))) return true;
-
   return false;
 }
 
-/* ========== Data table render ========== */
+/**
+ * Build a GL row.
+ * - `_display`: original cell text as shown in Excel/CSV (never reformatted for UI)
+ * - `_export`: original cell values for write-back (numbers stay numbers; text stays text)
+ * - POSTED_DATE / NOMINAL / COST_CENTRE / TXN_CURRENCY / FUNCTIONAL_AMOUNT:
+ *   parsed copies used only for filter & sum — not for display/export
+ */
+function buildGlRow({ headers, values, displays, colIndex, id }) {
+  const _display = {};
+  const _export = {};
+  headers.forEach((h, i) => {
+    if (!h) return;
+    const rawVal = values[i];
+    const disp = displays && displays[i] != null && displays[i] !== ""
+      ? String(displays[i])
+      : (rawVal == null || rawVal === "" ? "" : String(rawVal));
+    _display[h] = disp;
+    // Prefer original typed value for export; fall back to display text
+    if (rawVal == null || rawVal === "") _export[h] = disp;
+    else if (rawVal instanceof Date) _export[h] = disp || parseDateToISO(rawVal) || "";
+    else _export[h] = rawVal;
+  });
+
+  const di = colIndex.POSTED_DATE;
+  const ai = colIndex.NOMINAL;
+  const ci = colIndex.COST_CENTRE;
+  const mi = colIndex.FUNCTIONAL_AMOUNT;
+  const ccy = colIndex.TXN_CURRENCY;
+
+  const postedRaw = di >= 0 ? values[di] : "";
+  const postedDisp = di >= 0 ? _display[headers[di]] : "";
+  const iso = parseDateToISO(postedRaw) || parseDateToISO(postedDisp) || "";
+
+  const amountRaw = mi >= 0 ? values[mi] : "";
+  const amountDisp = mi >= 0 ? _display[headers[mi]] : "";
+  let amountNum = typeof amountRaw === "number" && !Number.isNaN(amountRaw)
+    ? amountRaw
+    : parseAmount(amountRaw);
+  if (Number.isNaN(amountNum)) amountNum = parseAmount(amountDisp);
+  if (Number.isNaN(amountNum)) amountNum = 0;
+
+  return {
+    _id: id,
+    _display,
+    _export,
+    POSTED_DATE: iso,
+    NOMINAL: String((ai >= 0 ? values[ai] : "") ?? "").trim() || String(_display[headers[ai]] || "").trim(),
+    COST_CENTRE: String((ci >= 0 ? values[ci] : "") ?? "").trim() || String(_display[headers[ci]] || "").trim(),
+    TXN_CURRENCY: ccy >= 0
+      ? (String(values[ccy] ?? "").trim() || String(_display[headers[ccy]] || "").trim())
+      : "",
+    FUNCTIONAL_AMOUNT: amountNum,
+  };
+}
+
+function rowFromSeedObject(raw, id) {
+  const headers = SEED_HEADERS;
+  const values = headers.map(h => raw[h]);
+  const displays = headers.map(h => {
+    const v = raw[h];
+    if (v == null || v === "") return "";
+    if (typeof v === "number") {
+      // Seed demo only — real uploads use Excel/CSV original text
+      return Number.isInteger(v) ? String(v) : v.toFixed(2);
+    }
+    return String(v);
+  });
+  const colIndex = {
+    POSTED_DATE: headers.indexOf("POSTED_DATE"),
+    NOMINAL: headers.indexOf("NOMINAL"),
+    COST_CENTRE: headers.indexOf("COST_CENTRE"),
+    FUNCTIONAL_AMOUNT: headers.indexOf("FUNCTIONAL_AMOUNT"),
+    TXN_CURRENCY: headers.indexOf("TXN_CURRENCY"),
+  };
+  return buildGlRow({ headers, values, displays, colIndex, id });
+}
+
+function loadVisibleCols() {
+  try {
+    const ver = localStorage.getItem(COLS_STORAGE_KEY + ".v");
+    if (ver !== "2") {
+      // One-time migrate: drop JOURNAL_CATEGORY from previous default core set
+      localStorage.setItem(COLS_STORAGE_KEY + ".v", "2");
+      localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(CORE_GL_COLS));
+      return new Set(CORE_GL_COLS);
+    }
+    const raw = localStorage.getItem(COLS_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) return new Set(arr);
+    }
+  } catch (_) {}
+  return new Set(CORE_GL_COLS);
+}
+function saveVisibleCols() {
+  try { localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify([...visibleColSet])); } catch (_) {}
+}
+
+/* ========== Cadency table ========== */
 function rowLooksEmpty(row) {
   return !String(row.Account || "").trim()
     && !String(row.CC || "").trim()
@@ -753,8 +1379,8 @@ function deleteDataRow(idx) {
   if (activeRowIndex === idx) {
     activeRowIndex = null;
     selectedIds = new Set();
-    visibleIds = [];
-    document.getElementById("reviewTarget").textContent = "Select a Cadency Account or CC.";
+    document.getElementById("reviewTarget").textContent =
+      "Filters ready — adjust dates / Account / CC / Currency, then Apply.";
   } else if (activeRowIndex != null && activeRowIndex > idx) {
     activeRowIndex -= 1;
   }
@@ -764,7 +1390,6 @@ function deleteDataRow(idx) {
     });
   }
   renderDataTable();
-  renderGL();
   updateCompare();
 }
 function renderDataTable() {
@@ -775,7 +1400,6 @@ function renderDataTable() {
   dataTable.forEach((row, idx) => {
     const tr = document.createElement("tr");
     if (idx === activeRowIndex) tr.classList.add("active-row");
-
     if (editing) {
       tr.innerHTML = `
         <td><input class="edit" data-k="Effective_Date" data-i="${idx}" value="${escapeAttr(row.Effective_Date)}" /></td>
@@ -800,7 +1424,7 @@ function renderDataTable() {
   });
 }
 
-/* ========== Resizable splitter ========== */
+/* ========== Splitter / layout ========== */
 function clampDrawerWidth(px) {
   const workspace = document.getElementById("workspace");
   const total = workspace.getBoundingClientRect().width;
@@ -811,15 +1435,18 @@ function clampDrawerWidth(px) {
 function applyDrawerWidth(px, persist = true) {
   const w = clampDrawerWidth(px);
   document.getElementById("workspace").style.setProperty("--drawer-w", `${w}px`);
-  const splitter = document.getElementById("splitter");
-  splitter.setAttribute("aria-valuenow", String(Math.round(w)));
+  document.getElementById("splitter").setAttribute("aria-valuenow", String(Math.round(w)));
   if (persist) {
     try { localStorage.setItem(SPLIT_STORAGE_KEY, String(Math.round(w))); } catch (_) {}
   }
   return w;
 }
-function resetDrawerWidth() {
-  applyDrawerWidth(DEFAULT_DRAWER_W, true);
+function resetDrawerWidth() { applyDrawerWidth(DEFAULT_DRAWER_W, true); }
+function setCadencyCollapsed(collapsed) {
+  cadencyCollapsed = collapsed;
+  document.getElementById("workspace").classList.toggle("cadency-collapsed", collapsed);
+  document.getElementById("btnToggleCadency").textContent = collapsed ? "Show Cadency" : "Hide Cadency";
+  try { localStorage.setItem(CADENCY_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch (_) {}
 }
 function initSplitter() {
   const workspace = document.getElementById("workspace");
@@ -834,8 +1461,7 @@ function initSplitter() {
   let dragging = false;
   const onMove = (clientX) => {
     const rect = workspace.getBoundingClientRect();
-    const next = rect.right - clientX;
-    applyDrawerWidth(next, false);
+    applyDrawerWidth(rect.right - clientX, false);
   };
   const stopDrag = () => {
     if (!dragging) return;
@@ -847,7 +1473,7 @@ function initSplitter() {
   };
 
   splitter.addEventListener("pointerdown", (e) => {
-    if (!drawerOpen || window.matchMedia("(max-width: 960px)").matches) return;
+    if (!drawerOpen || cadencyCollapsed || window.matchMedia("(max-width: 960px)").matches) return;
     dragging = true;
     splitter.classList.add("dragging");
     document.body.classList.add("resizing-panels");
@@ -855,10 +1481,7 @@ function initSplitter() {
     onMove(e.clientX);
     e.preventDefault();
   });
-  splitter.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    onMove(e.clientX);
-  });
+  splitter.addEventListener("pointermove", (e) => { if (dragging) onMove(e.clientX); });
   splitter.addEventListener("pointerup", stopDrag);
   splitter.addEventListener("pointercancel", stopDrag);
   splitter.addEventListener("dblclick", resetDrawerWidth);
@@ -876,7 +1499,6 @@ function initSplitter() {
   });
 }
 
-/* ========== Drawer / filters ========== */
 function openDrawer() {
   drawerOpen = true;
   document.getElementById("workspace").classList.remove("drawer-closed");
@@ -889,6 +1511,87 @@ function toggleDrawer() {
   if (drawerOpen) closeDrawer(); else openDrawer();
 }
 
+/* ========== Filter option lists ========== */
+function uniqueSorted(values) {
+  return [...new Set(values.filter(v => v != null && String(v).trim() !== "").map(v => String(v).trim()))]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+function refreshFilterOptions() {
+  const accounts = uniqueSorted(glRows.map(r => r.NOMINAL));
+  const ccs = uniqueSorted(glRows.map(r => r.COST_CENTRE));
+  const ccys = uniqueSorted(glRows.map(r => normalizeCurrency(r.TXN_CURRENCY)));
+
+  const sel = document.getElementById("fCurrency");
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">All currencies</option>' +
+    ccys.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
+  if (prev && ccys.includes(prev)) sel.value = prev;
+
+  // store for combobox search
+  comboAccount.options = accounts;
+  comboCC.options = ccs;
+}
+
+/* ========== Combobox ========== */
+function createCombo(rootId, inputId, listId) {
+  const root = document.getElementById(rootId);
+  const input = document.getElementById(inputId);
+  const list = document.getElementById(listId);
+  const api = {
+    options: [],
+    open() { root.classList.add("open"); api.render(); },
+    close() { root.classList.remove("open"); },
+    render() {
+      const q = input.value.trim().toLowerCase();
+      const items = api.options.filter(o => !q || o.toLowerCase().includes(q)).slice(0, 80);
+      if (!items.length) {
+        list.innerHTML = `<div class="empty-opt">${api.options.length ? "No matches" : "Upload GL to load values"}</div>`;
+        return;
+      }
+      list.innerHTML = items.map((o, i) =>
+        `<button type="button" role="option" data-v="${escapeAttr(o)}" class="${i === 0 ? "active" : ""}">${escapeHtml(o)}</button>`
+      ).join("");
+    },
+    pick(v) {
+      input.value = v;
+      api.close();
+      applyFilters();
+    },
+  };
+  input.addEventListener("focus", () => api.open());
+  input.addEventListener("input", () => { api.open(); api.render(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { api.close(); return; }
+    if (e.key === "Enter") {
+      const first = list.querySelector("button[data-v]");
+      if (root.classList.contains("open") && first) {
+        e.preventDefault();
+        api.pick(first.dataset.v);
+      } else {
+        applyFilters();
+      }
+    }
+  });
+  list.addEventListener("mousedown", (e) => {
+    const btn = e.target.closest("button[data-v]");
+    if (!btn) return;
+    e.preventDefault();
+    api.pick(btn.dataset.v);
+  });
+  return api;
+}
+const comboAccount = createCombo("comboAccount", "fAccount", "listAccount");
+const comboCC = createCombo("comboCC", "fCostCenter", "listCC");
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#comboAccount")) comboAccount.close();
+  if (!e.target.closest("#comboCC")) comboCC.close();
+  if (!e.target.closest("#colMenu") && !e.target.closest("#btnColumns")) {
+    document.getElementById("colMenu").classList.remove("open");
+  }
+});
+
+/* ========== Filters / GL render ========== */
 function startReview(idx, mode) {
   activeRowIndex = idx;
   const row = dataTable[idx];
@@ -897,19 +1600,29 @@ function startReview(idx, mode) {
     alert("Invalid Effective Date on this row.");
     return;
   }
-  document.getElementById("fDateFrom").value = monthStart(asOf);
   document.getElementById("fDateTo").value = asOf;
+  document.getElementById("fDateFrom").value = monthStart(asOf);
   document.getElementById("fAccount").value = row.Account;
   document.getElementById("fCostCenter").value = row.CC;
-  document.getElementById("fCurrency").value = row.Currency || "";
+  const ccy = normalizeCurrency(row.Currency || "");
+  const sel = document.getElementById("fCurrency");
+  if (ccy && [...sel.options].some(o => o.value === ccy)) sel.value = ccy;
+  else sel.value = "";
+  document.getElementById("fTarget").value = round2(row.Amount).toFixed(2);
+  compareMode = "selected";
 
-  const modeLabel = mode === "account" ? "Account click" : "CC click";
+  const modeLabel = mode === "account" ? "From Cadency Account" : "From Cadency CC";
   document.getElementById("reviewTarget").textContent =
-    `${modeLabel}: Effective=${fmtDisplayDate(asOf)} · Account/NOMINAL=${row.Account} · CC/COST_CENTRE=${row.CC} · CCY=${row.Currency || "—"} · Expected=${money(row.Amount)}`;
+    `${modeLabel}: ${fmtDisplayDate(asOf)} · ${row.Account} · ${row.CC} · ${row.Currency || "—"} · Target ${money(row.Amount)}`;
 
   selectedIds = new Set();
+  setCadencyCollapsed(false);
   openDrawer();
   applyFilters();
+  // After filter, auto-select all visible for one-click verify
+  selectedIds = new Set(visibleIds);
+  renderGL();
+  updateCompare();
   renderDataTable();
 }
 
@@ -930,33 +1643,103 @@ function applyFilters() {
     const d = r.POSTED_DATE;
     if (f.dateFrom && d < f.dateFrom) continue;
     if (f.dateTo && d > f.dateTo) continue;
-    if (f.account && String(r.NOMINAL) !== f.account) continue;
-    if (f.costCenter && !costCentersMatch(r.COST_CENTRE, f.costCenter)) continue;
+    if (f.account) {
+      const nom = String(r.NOMINAL);
+      if (comboAccount.options.includes(f.account)) {
+        if (nom !== f.account) continue;
+      } else if (!nom.toLowerCase().includes(f.account.toLowerCase())) {
+        continue;
+      }
+    }
+    if (f.costCenter) {
+      const cc = String(r.COST_CENTRE);
+      if (comboCC.options.includes(f.costCenter)) {
+        if (!costCentersMatch(cc, f.costCenter)) continue;
+      } else if (!costCentersMatch(cc, f.costCenter) &&
+                 !cc.toLowerCase().includes(f.costCenter.toLowerCase())) {
+        continue;
+      }
+    }
     if (f.currency && normalizeCurrency(r.TXN_CURRENCY) !== normalizeCurrency(f.currency)) continue;
     visibleIds.push(r._id);
   }
   selectedIds = new Set([...selectedIds].filter(id => visibleIds.includes(id)));
+  const bits = [];
+  if (f.dateFrom || f.dateTo) bits.push(`${f.dateFrom || "…"} → ${f.dateTo || "…"}`);
+  if (f.account) bits.push(`Account ${f.account}`);
+  if (f.costCenter) bits.push(`CC ${f.costCenter}`);
+  if (f.currency) bits.push(f.currency);
+  if (activeRowIndex == null) {
+    document.getElementById("reviewTarget").textContent = bits.length
+      ? `Filtered: ${bits.join(" · ")} · ${visibleIds.length} row(s)`
+      : `Showing all ${glRows.length} GL row(s). Apply filters to narrow.`;
+  }
   renderGL();
   updateCompare();
 }
 
+function clearFilters() {
+  document.getElementById("fDateFrom").value = "";
+  document.getElementById("fDateTo").value = "";
+  document.getElementById("fAccount").value = "";
+  document.getElementById("fCostCenter").value = "";
+  document.getElementById("fCurrency").value = "";
+  activeRowIndex = null;
+  selectedIds = new Set();
+  document.getElementById("reviewTarget").textContent =
+    "Filters cleared. Showing all GL rows.";
+  showAllGlRows();
+  renderDataTable();
+}
+
+function activeVisibleCols() {
+  // Keep CORE order first (only if present in file), then remaining headers in file order
+  const ordered = [
+    ...CORE_GL_COLS.filter(c => glAllHeaders.includes(c)),
+    ...glAllHeaders.filter(c => !CORE_GL_COLS.includes(c)),
+  ];
+  return ordered.filter(c => visibleColSet.has(c) && glAllHeaders.includes(c));
+}
+
+function renderColMenu() {
+  const list = document.getElementById("colList");
+  const all = [
+    ...CORE_GL_COLS.filter(c => glAllHeaders.includes(c)),
+    ...glAllHeaders.filter(c => !CORE_GL_COLS.includes(c)),
+  ];
+  const seen = new Set();
+  const cols = all.filter(c => { if (seen.has(c)) return false; seen.add(c); return true; });
+  list.innerHTML = cols.map(c => {
+    const core = CORE_GL_COLS.includes(c);
+    const checked = visibleColSet.has(c) ? "checked" : "";
+    return `<label class="col-item ${core ? "core" : ""}">
+      <input type="checkbox" data-col="${escapeAttr(c)}" ${checked} />
+      <span>${escapeHtml(c)}${core ? " (core)" : ""}</span>
+    </label>`;
+  }).join("");
+}
+
 function renderGL() {
+  const theadRow = document.querySelector("#glTable thead tr");
   const tbody = document.querySelector("#glTable tbody");
   const empty = document.getElementById("glEmpty");
+  const cols = activeVisibleCols();
+
+  theadRow.innerHTML =
+    `<th style="width:36px"><input type="checkbox" id="chkAll" aria-label="Select all visible" /></th>` +
+    cols.map(c => `<th class="${c === "FUNCTIONAL_AMOUNT" || c === "TXN_AMT" ? "num" : ""}">${escapeHtml(c)}</th>`).join("");
+
   tbody.innerHTML = "";
 
   if (!glRows.length) {
     empty.hidden = false;
-    empty.textContent = "Upload GL report (.xlsx) or CSV.";
+    empty.textContent = "Upload a GL report (.xlsx) or CSV.";
     document.getElementById("glCounts").textContent = "0 visible · 0 selected";
-    document.getElementById("chkAll").checked = false;
     return;
   }
   if (!visibleIds.length) {
     empty.hidden = false;
-    empty.textContent = activeRowIndex == null
-      ? "Upload a GL report, or select a Cadency Account / CC to filter."
-      : "No GL report rows match these filters. Check Account↔NOMINAL, CC↔COST_CENTRE, Currency, and date window.";
+    empty.textContent = "No rows match these filters. Try clearing Account / CC / Currency / dates.";
   } else {
     empty.hidden = true;
   }
@@ -965,71 +1748,112 @@ function renderGL() {
   for (const id of visibleIds) {
     const r = byId.get(id);
     const tr = document.createElement("tr");
+    if (selectedIds.has(id)) tr.classList.add("selected-row");
     const checked = selectedIds.has(id) ? "checked" : "";
-    tr.innerHTML = `
-      <td><input type="checkbox" data-id="${id}" class="row-chk" ${checked} aria-label="Select row ${id}" /></td>
-      <td>${escapeHtml(r.POSTED_DATE)}</td>
-      <td>${escapeHtml(r.NOMINAL)}</td>
-      <td title="Matches image CC via smart digit/suffix rules">${escapeHtml(r.COST_CENTRE)}</td>
-      <td>${escapeHtml(r.TXN_CURRENCY)}</td>
-      <td>${escapeHtml(r.JOURNAL_CATEGORY || "")}</td>
-      <td class="num">${money(r.FUNCTIONAL_AMOUNT)}</td>`;
+    const cells = cols.map(c => {
+      // Always show original uploaded cell text — never reformat amounts/dates for display
+      const text = r._display && r._display[c] != null
+        ? String(r._display[c])
+        : "";
+      const isAmt = c === "FUNCTIONAL_AMOUNT" || c === "TXN_AMT" || /AMOUNT|AMT/i.test(c);
+      return `<td class="${isAmt ? "num" : ""}">${escapeHtml(text)}</td>`;
+    }).join("");
+    tr.innerHTML = `<td><input type="checkbox" data-id="${id}" class="row-chk" ${checked} aria-label="Select row ${id}" /></td>${cells}`;
     tbody.appendChild(tr);
   }
 
+  const chkAll = document.getElementById("chkAll");
   const allSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
-  document.getElementById("chkAll").checked = allSelected;
+  if (chkAll) chkAll.checked = allSelected;
   document.getElementById("glCounts").textContent =
     `${visibleIds.length} visible · ${selectedIds.size} selected`;
+  updateStickyOffsets();
 }
 
-function selectedSum() {
+function sumIds(ids) {
   let sum = 0;
   const byId = new Map(glRows.map(r => [r._id, r]));
-  for (const id of selectedIds) {
+  for (const id of ids) {
     const r = byId.get(id);
     if (r) sum += Number(r.FUNCTIONAL_AMOUNT) || 0;
   }
   return round2(sum);
 }
+function visibleSum() { return sumIds(visibleIds); }
+function selectedSum() { return sumIds([...selectedIds]); }
 
-function updateCompare() {
-  const expEl = document.getElementById("mExpected");
-  const selEl = document.getElementById("mSelected");
-  const deltaEl = document.getElementById("mDelta");
-  const statusEl = document.getElementById("mStatus");
-
-  if (activeRowIndex == null) {
-    expEl.textContent = "—";
-    selEl.textContent = selectedIds.size ? money(selectedSum()) : "—";
-    deltaEl.textContent = "—";
-    statusEl.innerHTML = '<span class="badge pending">Pending</span>';
-    return;
-  }
-
-  const expected = round2(dataTable[activeRowIndex].Amount);
-  const selected = selectedSum();
-  const delta = round2(selected - expected);
-  expEl.textContent = money(expected);
-  selEl.textContent = money(selected);
-
-  if (selectedIds.size === 0) {
-    deltaEl.textContent = "—";
-    statusEl.innerHTML = '<span class="badge pending">Pending</span>';
-    return;
-  }
-
-  deltaEl.textContent = money(delta);
-  const match = Math.abs(selected - expected) < 0.005;
-  statusEl.innerHTML = match
-    ? '<span class="badge match">Match</span>'
-    : '<span class="badge mismatch">Mismatch</span>';
-
-  dataTable[activeRowIndex].Check_Result = match ? "Match" : "Mismatch";
-  renderDataTable();
+function getTargetAmount() {
+  const raw = document.getElementById("fTarget").value.trim();
+  if (!raw) return null;
+  const n = parseAmount(raw);
+  return Number.isNaN(n) ? null : round2(n);
 }
 
-/* ========== Image OCR ========== */
+function updateCompare() {
+  const vis = visibleSum();
+  const sel = selectedSum();
+  document.getElementById("mVisible").textContent = visibleIds.length ? money(vis) : "—";
+  document.getElementById("mSelected").textContent = selectedIds.size ? money(sel) : "—";
+
+  const target = getTargetAmount();
+  const deltaEl = document.getElementById("mDelta");
+  const statusEl = document.getElementById("mStatus");
+  const tip = document.getElementById("compareTip");
+  const dockVis = document.getElementById("dockVisible");
+  const dockSel = document.getElementById("dockSelected");
+  const dockDelta = document.getElementById("dockDelta");
+  const dockStatus = document.getElementById("dockStatus");
+
+  // Prefer selected when user has ticks; else compare filtered total
+  const useSelected = selectedIds.size > 0;
+  const actual = useSelected ? sel : vis;
+  const actualLabel = useSelected ? "Selected" : "Filtered";
+
+  let deltaText = "—";
+  let statusHTML = '<span class="badge pending">Pending</span>';
+
+  if (target == null || (!visibleIds.length && !selectedIds.size)) {
+    tip.innerHTML = useSelected
+      ? "Rows selected. Type a Target (or click Cadency) to check Match / Mismatch. Long list? <strong>Export filtered GL</strong>."
+      : "Tip: check the total, then scroll freely. For a long list, <strong>Export filtered GL</strong> (yellow highlight, all columns).";
+  } else {
+    const delta = round2(actual - target);
+    deltaText = money(delta);
+    const match = Math.abs(delta) < 0.005;
+    statusHTML = match
+      ? '<span class="badge match">Match</span>'
+      : '<span class="badge mismatch">Mismatch</span>';
+    tip.textContent = `${actualLabel} ${money(actual)} vs Target ${money(target)} → difference ${money(delta)}.`;
+    if (activeRowIndex != null) {
+      dataTable[activeRowIndex].Check_Result = match ? "Match" : "Mismatch";
+      renderDataTable();
+    }
+  }
+
+  deltaEl.textContent = deltaText;
+  statusEl.innerHTML = statusHTML;
+  if (dockVis) dockVis.textContent = visibleIds.length ? money(vis) : "—";
+  if (dockSel) dockSel.textContent = selectedIds.size ? money(sel) : "—";
+  if (dockDelta) dockDelta.textContent = deltaText;
+  if (dockStatus) dockStatus.innerHTML = statusHTML;
+}
+
+/* ========== Columns menu ========== */
+function setCoreCols() {
+  visibleColSet = new Set(CORE_GL_COLS.filter(c => glAllHeaders.includes(c)));
+  if (!visibleColSet.size) glAllHeaders.slice(0, 5).forEach(c => visibleColSet.add(c));
+  saveVisibleCols();
+  renderColMenu();
+  renderGL();
+}
+function setAllCols() {
+  visibleColSet = new Set(glAllHeaders);
+  saveVisibleCols();
+  renderColMenu();
+  renderGL();
+}
+
+/* ========== Image OCR (Cadency) ========== */
 function isImageFile(file) {
   if (!file) return false;
   if (file.type && file.type.startsWith("image/")) return true;
@@ -1100,23 +1924,18 @@ function parseDataRowFromText(lineText, fallbackDate = "") {
       && !/\d{1,3}(?:,\d{3})*\.\d{2}/.test(text)) {
     return null;
   }
-
   const currencyRe = /\b(USD|HKD|EUR|GBP|CNY|JPY|SGD|AUD|CAD|CHF|CNH)\b/i;
   const dateRe = /\b(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})\b/;
   const amountRe = /[-+]?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\b/g;
   const ccRe = /\b([A-Z]{1,4}\d{6,14}|\d{8,14})\b/i;
-
   const amounts = text.match(amountRe);
   if (!amounts || !amounts.length) return null;
   const amount = parseAmount(amounts[amounts.length - 1]);
   if (Number.isNaN(amount)) return null;
-
   const ccyM = text.match(currencyRe);
   const currency = ccyM ? ccyM[1].toUpperCase() : "";
   const dateM = text.match(dateRe);
   const effective = dateM ? (parseDateToISO(dateM[1]) || dateM[1]) : fallbackDate;
-
-  // Prefer letter+digits CC codes; else long digit codes that are not the amount digits.
   let cc = "";
   const ccMatches = [...text.matchAll(new RegExp(ccRe.source, "gi"))].map(m => m[1]);
   const letterCC = ccMatches.find(v => /[A-Za-z]/.test(v));
@@ -1124,8 +1943,6 @@ function parseDataRowFromText(lineText, fallbackDate = "") {
   else if (ccMatches.length) {
     cc = ccMatches.find(v => !amounts.some(a => a.replace(/[^\d]/g, "").includes(v))) || ccMatches[0];
   }
-
-  // Account/NOMINAL: 4–12 digit token that is not the CC / amount.
   let account = "";
   const tokens = text.split(" ");
   for (const t of tokens) {
@@ -1138,7 +1955,6 @@ function parseDataRowFromText(lineText, fallbackDate = "") {
     const m = text.match(/\b(\d{4,12})\b/);
     if (m) account = m[1];
   }
-
   if (!account && !cc) return null;
   return {
     Effective_Date: effective || "",
@@ -1154,12 +1970,9 @@ function parseOcrResultToRows(ocrData) {
   const textLines = lines.length
     ? lines.map(l => l.words.map(w => w.text).join(" "))
     : String(ocrData.text || "").split(/\r?\n/);
-
-  // Find a common as-of / effective date from the whole OCR blob if row dates are missing.
   const allText = String(ocrData.text || textLines.join("\n"));
   const globalDateM = allText.match(/\b(\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})\b/);
   const fallbackDate = globalDateM ? (parseDateToISO(globalDateM[1]) || "") : "";
-
   const rows = [];
   for (const line of textLines) {
     const row = parseDataRowFromText(line, fallbackDate);
@@ -1211,9 +2024,8 @@ function loadDataTableRows(rows, statusMsg, fromOcr = false) {
   editing = true;
   document.getElementById("editBar").hidden = false;
   setLoadStatus(statusMsg);
-  visibleIds = [];
+  setCadencyCollapsed(false);
   renderDataTable();
-  renderGL();
   updateCompare();
   if (fromOcr) {
     document.getElementById("imagePreviewMeta").innerHTML =
@@ -1221,7 +2033,7 @@ function loadDataTableRows(rows, statusMsg, fromOcr = false) {
   }
 }
 
-/* ========== CSV helpers ========== */
+/* ========== CSV / import helpers ========== */
 function splitCSVLine(line) {
   const out = [];
   let cur = "";
@@ -1238,7 +2050,6 @@ function splitCSVLine(line) {
   out.push(cur);
   return out;
 }
-
 function parseCSVMatrix(text) {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter(l => l.trim().length);
   if (!lines.length) throw new Error("Empty CSV");
@@ -1299,7 +2110,6 @@ const IMPORT_ALIASES = {
 function scoreImportHeaders(headers) {
   const h = (headers || []).map(x => String(x ?? "").trim());
   let score = 0;
-  // Prefer real GL report column names over legacy mock headers.
   if (pickCol(h, ["POSTED_DATE", "Posted Date"]) >= 0) score += 5;
   else if (pickCol(h, ["Posting_Date", "Posting Date"]) >= 0) score += 2;
   if (pickCol(h, ["NOMINAL"]) >= 0) score += 5;
@@ -1327,43 +2137,52 @@ function findImportHeaderRow(matrix) {
   return best;
 }
 
-function parseImportMatrix(matrix, sheetName) {
+function parseImportMatrix(matrix, sheetName, displayMatrix) {
   const found = findImportHeaderRow(matrix);
   const headerRowIdx = found.idx;
-  const headers = found.headers;
+  const headers = found.headers.map(h => String(h ?? "").trim());
 
   const di = pickCol(headers, IMPORT_ALIASES.POSTED_DATE);
   const ai = pickCol(headers, IMPORT_ALIASES.NOMINAL);
   const ci = pickCol(headers, IMPORT_ALIASES.COST_CENTRE);
   const mi = pickCol(headers, IMPORT_ALIASES.FUNCTIONAL_AMOUNT);
   const ccy = pickCol(headers, IMPORT_ALIASES.TXN_CURRENCY);
-  const jci = pickCol(headers, IMPORT_ALIASES.JOURNAL_CATEGORY);
-  const lei = pickCol(headers, IMPORT_ALIASES.LEGAL_ENTITY);
 
   if (di < 0 || ai < 0 || ci < 0 || mi < 0) {
     throw new Error(
       "GL report missing required columns (POSTED_DATE, NOMINAL, COST_CENTRE, FUNCTIONAL_AMOUNT)." +
-      (sheetName ? ` Sheet: ${sheetName}` : "") +
-      "\nTip: use the Cadency/GL report sample columns, not the old Account/Cost_Center mock file."
+      (sheetName ? ` Sheet: ${sheetName}` : "")
     );
   }
+
+  const colIndex = {
+    POSTED_DATE: di,
+    NOMINAL: ai,
+    COST_CENTRE: ci,
+    FUNCTIONAL_AMOUNT: mi,
+    TXN_CURRENCY: ccy,
+  };
 
   const out = [];
   for (let i = headerRowIdx + 1; i < matrix.length; i++) {
     const row = matrix[i];
     if (!row || row.every(c => c === "" || c == null)) continue;
-    const iso = parseDateToISO(row[di]);
+
+    const displays = displayMatrix && displayMatrix[i]
+      ? displayMatrix[i]
+      : row.map(c => (c == null || c === "" ? "" : String(c)));
+
+    // Need a parseable posting date for filtering — skip only if neither value nor display parses
+    const iso = parseDateToISO(row[di]) || parseDateToISO(displays[di]);
     if (!iso) continue;
-    out.push({
-      POSTED_DATE: iso,
-      NOMINAL: String(row[ai] ?? "").trim(),
-      COST_CENTRE: String(row[ci] ?? "").trim(),
-      TXN_CURRENCY: ccy >= 0 ? String(row[ccy] ?? "").trim() : "",
-      FUNCTIONAL_AMOUNT: parseAmount(row[mi]),
-      JOURNAL_CATEGORY: jci >= 0 ? String(row[jci] ?? "").trim() : "",
-      LEGAL_ENTITY: lei >= 0 ? String(row[lei] ?? "").trim() : "",
-      _id: nextGlId++,
-    });
+
+    out.push(buildGlRow({
+      headers,
+      values: row,
+      displays,
+      colIndex,
+      id: nextGlId++,
+    }));
   }
   if (!out.length) {
     throw new Error(
@@ -1371,7 +2190,37 @@ function parseImportMatrix(matrix, sheetName) {
       (sheetName ? ` Sheet: ${sheetName}` : "")
     );
   }
-  return { sheetName: sheetName || "CSV", rows: out, headerScore: found.score };
+  return { sheetName: sheetName || "CSV", rows: out, headers, headerScore: found.score };
+}
+
+/** Read sheet preserving Excel displayed text (.w) and raw values (.v). */
+function sheetToValueAndDisplay(ws) {
+  if (!ws || !ws["!ref"]) return { matrix: [], display: [] };
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  const matrix = [];
+  const display = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    const rowV = [];
+    const rowD = [];
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: C });
+      const cell = ws[addr];
+      if (!cell) {
+        rowV.push("");
+        rowD.push("");
+        continue;
+      }
+      rowV.push(cell.v == null ? "" : cell.v);
+      // Prefer Excel's own formatted text so on-screen / export matches the file
+      if (cell.w != null && String(cell.w).length) rowD.push(String(cell.w));
+      else if (cell.v == null) rowD.push("");
+      else if (cell.v instanceof Date) rowD.push(parseDateToISO(cell.v) || String(cell.v));
+      else rowD.push(String(cell.v));
+    }
+    matrix.push(rowV);
+    display.push(rowD);
+  }
+  return { matrix, display };
 }
 
 function parseImportWorkbook(ab) {
@@ -1381,31 +2230,54 @@ function parseImportWorkbook(ab) {
   const wb = XLSX.read(ab, { type: "array", cellDates: true });
   const preferredOrder = ["GL report", "GL Report", "Import", "GL Detail", "Sheet1"];
   let best = null;
-
   const names = [
     ...preferredOrder.filter(n => wb.SheetNames.includes(n)),
     ...wb.SheetNames.filter(n => !preferredOrder.includes(n)),
   ];
-
   for (const name of names) {
-    const matrix = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "", raw: true });
+    const { matrix, display } = sheetToValueAndDisplay(wb.Sheets[name]);
     if (!matrix.length) continue;
     try {
-      const parsed = parseImportMatrix(matrix, name);
+      const parsed = parseImportMatrix(matrix, name, display);
       if (!best || (parsed.headerScore || 0) > (best.headerScore || 0) ||
           ((parsed.headerScore || 0) === (best.headerScore || 0) && parsed.rows.length > best.rows.length)) {
         best = parsed;
       }
-      // Strong match on real GL report headers — take it immediately.
       if ((parsed.headerScore || 0) >= 18) return parsed;
     } catch (_) { /* try next sheet */ }
   }
-
   if (best) return best;
   throw new Error(
     "Could not find a GL report sheet with POSTED_DATE / NOMINAL / COST_CENTRE / FUNCTIONAL_AMOUNT. " +
     `Sheets: ${wb.SheetNames.join(", ")}`
   );
+}
+
+function loadGlParsed(parsed, fileName) {
+  nextGlId = 0;
+  // Exact headers from the file only — do not invent columns
+  glAllHeaders = (parsed.headers || []).filter(Boolean);
+  glRows = parsed.rows.map((r, i) => ({ ...r, _id: i }));
+  nextGlId = glRows.length;
+  selectedIds = new Set();
+  // Visible cols: keep prior choices that still exist; ensure current core defaults on
+  const next = new Set([...visibleColSet].filter(c => glAllHeaders.includes(c)));
+  CORE_GL_COLS.forEach(c => { if (glAllHeaders.includes(c)) next.add(c); });
+  if (!next.size) {
+    // Fall back to whatever the file has, preferring known core names
+    glAllHeaders.slice(0, 6).forEach(c => next.add(c));
+  }
+  visibleColSet = next;
+  saveVisibleCols();
+  refreshFilterOptions();
+  setLoadStatus(`GL report loaded: ${fileName} / ${parsed.sheetName} (${glRows.length} rows)`);
+  if (activeRowIndex != null) applyFilters();
+  else {
+    document.getElementById("reviewTarget").textContent =
+      `GL loaded (${glRows.length} rows). Filter by date / Account / CC / Currency — Cadency optional.`;
+    showAllGlRows();
+  }
+  renderColMenu();
 }
 
 function showAllGlRows() {
@@ -1415,7 +2287,8 @@ function showAllGlRows() {
   updateCompare();
 }
 
-function exportCSV() {
+/* ========== Export ========== */
+function exportCadencyCSV() {
   const headers = [
     "Effective Date", "Account", "CC", "Transaction Currency (CCY2) Code",
     "G/L Ending Balance", "Result"
@@ -1441,6 +2314,81 @@ function exportCSV() {
   a.download = "cadency_checked.csv";
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function exportFilteredGL() {
+  if (!visibleIds.length) {
+    alert("No filtered rows to export. Apply filters (or clear them to export all), then try again.");
+    return;
+  }
+  if (typeof XLSX === "undefined") {
+    alert("SheetJS failed to load. Stay online and reload, or export won’t work.");
+    return;
+  }
+  const byId = new Map(glRows.map(r => [r._id, r]));
+  // Only original uploaded headers — do not invent missing core cols
+  const headers = (glAllHeaders.length ? glAllHeaders : CORE_GL_COLS).filter(Boolean);
+  const aoa = [headers];
+  for (const id of visibleIds) {
+    const r = byId.get(id);
+    if (!r) continue;
+    aoa.push(headers.map(h => {
+      // Prefer original typed export value; if it's a Date, use original display text
+      if (r._export && h in r._export) {
+        const v = r._export[h];
+        if (v instanceof Date) return (r._display && r._display[h]) || parseDateToISO(v) || "";
+        return v;
+      }
+      if (r._display && h in r._display) return r._display[h];
+      return "";
+    }));
+  }
+
+  const f = getFilters();
+  const summary = [
+    ["GL filtered export"],
+    ["Note", "Data cells are original values from the upload. Only row filter + highlight were applied."],
+    ["Exported at", new Date().toISOString()],
+    ["Filtered rows", visibleIds.length],
+    ["Filtered total (FUNCTIONAL_AMOUNT)", visibleSum()],
+    ["Selected rows", selectedIds.size],
+    ["Selected total (FUNCTIONAL_AMOUNT)", selectedIds.size ? selectedSum() : ""],
+    ["Target", getTargetAmount() ?? ""],
+    [],
+    ["Filters"],
+    ["Date from", f.dateFrom || ""],
+    ["Date to", f.dateTo || ""],
+    ["Account / NOMINAL", f.account || ""],
+    ["CC / COST_CENTRE", f.costCenter || ""],
+    ["Currency", f.currency || ""],
+  ];
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wsSum = XLSX.utils.aoa_to_sheet(summary);
+
+  // Marker column so highlight is visible even if Excel ignores cell styles
+  const highlightCol = headers.length;
+  XLSX.utils.sheet_add_aoa(ws, [["HIGHLIGHT"]], { origin: { r: 0, c: highlightCol } });
+  for (let r = 1; r < aoa.length; r++) {
+    const id = visibleIds[r - 1];
+    const isSel = selectedIds.has(id);
+    XLSX.utils.sheet_add_aoa(ws, [[isSel ? "SELECTED" : "FILTERED"]], { origin: { r, c: highlightCol } });
+    for (let c = 0; c <= highlightCol; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) continue;
+      ws[addr].s = {
+        fill: { patternType: "solid", fgColor: { rgb: isSel ? "FFE8A3" : "FFF3BF" } },
+      };
+    }
+  }
+  if (!ws["!cols"]) ws["!cols"] = [];
+  headers.forEach((_, i) => { ws["!cols"][i] = { wch: Math.min(22, Math.max(12, String(headers[i]).length + 2)) }; });
+  ws["!cols"][highlightCol] = { wch: 12 };
+
+  XLSX.utils.book_append_sheet(wb, ws, "Filtered GL");
+  XLSX.utils.book_append_sheet(wb, wsSum, "Summary");
+  XLSX.writeFile(wb, "GL_filtered_export.xlsx");
 }
 
 /* ========== Events ========== */
@@ -1495,23 +2443,32 @@ document.getElementById("btnAddRow").addEventListener("click", () => {
   document.getElementById("editBar").hidden = false;
   renderDataTable();
 });
-document.getElementById("btnResetSplit").addEventListener("click", resetDrawerWidth);
 
+document.getElementById("btnResetSplit").addEventListener("click", resetDrawerWidth);
+document.getElementById("btnToggleCadency").addEventListener("click", () => {
+  setCadencyCollapsed(!cadencyCollapsed);
+});
 document.getElementById("btnApply").addEventListener("click", applyFilters);
-document.getElementById("btnClearAccount").addEventListener("click", () => {
-  document.getElementById("fAccount").value = "";
-  applyFilters();
+document.getElementById("btnClearFilters").addEventListener("click", clearFilters);
+document.getElementById("fCurrency").addEventListener("change", applyFilters);
+document.getElementById("fDateTo").addEventListener("change", () => syncDateFromFromTo(true));
+document.getElementById("fDateFrom").addEventListener("change", applyFilters);
+document.getElementById("fTarget").addEventListener("input", updateCompare);
+
+document.querySelectorAll(".combo-clear").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.clear === "account") document.getElementById("fAccount").value = "";
+    if (btn.dataset.clear === "cc") document.getElementById("fCostCenter").value = "";
+    applyFilters();
+  });
 });
-document.getElementById("btnClearCC").addEventListener("click", () => {
-  document.getElementById("fCostCenter").value = "";
-  applyFilters();
-});
-document.getElementById("btnClearCcy").addEventListener("click", () => {
-  document.getElementById("fCurrency").value = "";
-  applyFilters();
-});
+
 document.getElementById("btnResetResult").addEventListener("click", () => {
-  if (activeRowIndex == null) return;
+  if (activeRowIndex == null) {
+    document.getElementById("fTarget").value = "";
+    updateCompare();
+    return;
+  }
   dataTable[activeRowIndex].Check_Result = "";
   selectedIds = new Set();
   renderDataTable();
@@ -1521,34 +2478,155 @@ document.getElementById("btnResetResult").addEventListener("click", () => {
 
 document.getElementById("btnSelectAll").addEventListener("click", () => {
   selectedIds = new Set(visibleIds);
+  compareMode = "selected";
   renderGL();
   updateCompare();
 });
 document.getElementById("btnClearSel").addEventListener("click", () => {
   selectedIds = new Set();
+  compareMode = "filtered";
   renderGL();
   updateCompare();
 });
-document.getElementById("chkAll").addEventListener("change", (e) => {
-  if (e.target.checked) selectedIds = new Set(visibleIds);
-  else selectedIds = new Set();
-  renderGL();
-  updateCompare();
-});
+
 document.querySelector("#glTable").addEventListener("change", (e) => {
+  if (e.target.id === "chkAll") {
+    selectedIds = e.target.checked ? new Set(visibleIds) : new Set();
+    compareMode = e.target.checked ? "selected" : "filtered";
+    renderGL();
+    updateCompare();
+    return;
+  }
   const chk = e.target.closest(".row-chk");
   if (!chk) return;
   const id = Number(chk.dataset.id);
   if (chk.checked) selectedIds.add(id);
   else selectedIds.delete(id);
-  document.getElementById("glCounts").textContent =
-    `${visibleIds.length} visible · ${selectedIds.size} selected`;
+  compareMode = selectedIds.size ? "selected" : "filtered";
+  renderGL();
+  updateCompare();
+});
+
+document.getElementById("btnColumns").addEventListener("click", () => {
+  const menu = document.getElementById("colMenu");
+  menu.classList.toggle("open");
+  if (menu.classList.contains("open")) renderColMenu();
+});
+document.getElementById("colList").addEventListener("change", (e) => {
+  const inp = e.target.closest("input[data-col]");
+  if (!inp) return;
+  const col = inp.dataset.col;
+  if (inp.checked) visibleColSet.add(col);
+  else {
+    // Don't allow hiding the last column; keep at least FUNCTIONAL_AMOUNT + one key
+    if (CORE_GL_COLS.includes(col) && [...visibleColSet].filter(c => CORE_GL_COLS.includes(c)).length <= 1) {
+      inp.checked = true;
+      return;
+    }
+    visibleColSet.delete(col);
+  }
+  saveVisibleCols();
+  renderGL();
+});
+document.getElementById("btnColsCore").addEventListener("click", setCoreCols);
+document.getElementById("btnColsAll").addEventListener("click", setAllCols);
+document.getElementById("btnColsDone").addEventListener("click", () => {
+  document.getElementById("colMenu").classList.remove("open");
+});
+
+document.getElementById("btnUseVisible").addEventListener("click", () => {
+  if (!visibleIds.length) return;
+  document.getElementById("fTarget").value = visibleSum().toFixed(2);
+  updateCompare();
+});
+document.getElementById("btnUseSelected").addEventListener("click", () => {
+  if (!selectedIds.size) return;
+  document.getElementById("fTarget").value = selectedSum().toFixed(2);
   updateCompare();
 });
 
 document.getElementById("btnCloseDrawer").addEventListener("click", closeDrawer);
 document.getElementById("btnToggleDrawer").addEventListener("click", toggleDrawer);
-document.getElementById("btnExport").addEventListener("click", exportCSV);
+document.getElementById("btnExportGl").addEventListener("click", exportFilteredGL);
+document.getElementById("btnExportCadency").addEventListener("click", exportCadencyCSV);
+document.getElementById("btnDockExport").addEventListener("click", exportFilteredGL);
+document.getElementById("btnDockFilters").addEventListener("click", () => {
+  document.getElementById("glControls")?.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+/* ========== Cadency image → CSV prompt (company AI chatbot) ========== */
+const CADENCY_IMAGE_CSV_PROMPT = `You are helping a finance user. Extract the Cadency table from the attached image into a clean CSV.
+
+Rules:
+1. Read only what is visible in the image. Do not invent rows or numbers.
+2. If a cell is unclear, leave it blank or write UNCLEAR — do not guess.
+3. Keep figures exactly as shown (same digits; do not round or reformat).
+4. Output CSV only (no explanation before or after). Use a header row.
+
+Required CSV columns (exact header names):
+Effective Date,Account,CC,Transaction Currency (CCY2) Code,G/L Ending Balance,Result
+
+Column guide:
+- Effective Date = period / as-of date on the row (e.g. 2026-06-30 or 06-30-2026)
+- Account = account number
+- CC = cost centre code
+- Transaction Currency (CCY2) Code = currency (e.g. USD, HKD). Leave blank if not shown.
+- G/L Ending Balance = the amount number on that row
+- Result = leave blank
+
+Example header + one sample row format:
+Effective Date,Account,CC,Transaction Currency (CCY2) Code,G/L Ending Balance,Result
+2026-06-30,100214402,HB00214402,USD,12500.00,
+
+Now extract every data row from the attached Cadency image into that CSV.`;
+
+function openPromptModal() {
+  const modal = document.getElementById("promptModal");
+  const ta = document.getElementById("promptText");
+  ta.value = CADENCY_IMAGE_CSV_PROMPT;
+  modal.hidden = false;
+  modal.classList.add("open");
+  document.getElementById("copyStatus").textContent = "";
+  document.getElementById("btnCopyPrompt")?.focus();
+}
+function closePromptModal() {
+  const modal = document.getElementById("promptModal");
+  modal.classList.remove("open");
+  modal.hidden = true;
+}
+async function copyPromptText() {
+  const text = document.getElementById("promptText").value;
+  const status = document.getElementById("copyStatus");
+  try {
+    await navigator.clipboard.writeText(text);
+    status.textContent = "Copied — paste into the company chatbot.";
+  } catch (_) {
+    // Fallback for older / restricted browsers
+    const ta = document.getElementById("promptText");
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand("copy");
+      status.textContent = "Copied — paste into the company chatbot.";
+    } catch (err) {
+      status.textContent = "Copy failed — select the text and copy manually (Ctrl/Cmd+C).";
+    }
+  }
+}
+
+document.getElementById("btnShowPrompt")?.addEventListener("click", openPromptModal);
+document.getElementById("btnShowPromptTop")?.addEventListener("click", openPromptModal);
+document.getElementById("btnClosePrompt")?.addEventListener("click", closePromptModal);
+document.getElementById("btnClosePrompt2")?.addEventListener("click", closePromptModal);
+document.getElementById("btnCopyPrompt")?.addEventListener("click", copyPromptText);
+document.getElementById("promptModal")?.addEventListener("click", (e) => {
+  if (e.target.id === "promptModal") closePromptModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.getElementById("promptModal")?.classList.contains("open")) {
+    closePromptModal();
+  }
+});
 
 document.getElementById("imageDataInput").addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
@@ -1556,11 +2634,7 @@ document.getElementById("imageDataInput").addEventListener("change", async (e) =
   try {
     if (isImageFile(file)) {
       const rows = await extractTableFromImage(file);
-      loadDataTableRows(
-        rows,
-        `OCR from ${file.name}: ${rows.length} rows — review & lock`,
-        true
-      );
+      loadDataTableRows(rows, `OCR from ${file.name}: ${rows.length} rows — review & lock`, true);
     } else {
       clearImagePreview();
       showOcrRaw("");
@@ -1590,7 +2664,6 @@ document.getElementById("importInput").addEventListener("change", async (e) => {
       const ab = await file.arrayBuffer();
       parsed = parseImportWorkbook(ab);
     } else {
-      // Filename may omit extension; try CSV text first, then xlsx.
       try {
         const text = await file.text();
         parsed = parseImportMatrix(parseCSVMatrix(text), file.name);
@@ -1599,28 +2672,40 @@ document.getElementById("importInput").addEventListener("change", async (e) => {
         parsed = parseImportWorkbook(ab);
       }
     }
-    nextGlId = 0;
-    glRows = parsed.rows.map((r, i) => ({ ...r, _id: i }));
-    nextGlId = glRows.length;
-    selectedIds = new Set();
-    setLoadStatus(`GL report loaded: ${file.name} / ${parsed.sheetName} (${glRows.length} rows)`);
-    if (activeRowIndex != null) applyFilters();
-    else {
-      document.getElementById("reviewTarget").textContent =
-        `GL report loaded (${glRows.length} rows). Click a Cadency Account or CC to filter & verify.`;
-      showAllGlRows();
-    }
+    loadGlParsed(parsed, file.name);
   } catch (err) {
     alert(err.message || String(err));
   }
   e.target.value = "";
 });
 
+/* ========== Page layout (one global scrollbar) ========== */
+function updateStickyOffsets() {
+  const topbar = document.querySelector(".topbar");
+  const th = topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 0;
+  document.documentElement.style.setProperty("--topbar-h", `${th}px`);
+}
+function initStickyLayout() {
+  updateStickyOffsets();
+  const topbar = document.querySelector(".topbar");
+  if (typeof ResizeObserver !== "undefined" && topbar) {
+    new ResizeObserver(() => updateStickyOffsets()).observe(topbar);
+  }
+  window.addEventListener("resize", updateStickyOffsets);
+}
+
 /* ========== Init ========== */
 initSplitter();
+initStickyLayout();
+try {
+  if (localStorage.getItem(CADENCY_COLLAPSE_KEY) === "1") setCadencyCollapsed(true);
+} catch (_) {}
+refreshFilterOptions();
+renderColMenu();
 renderDataTable();
 showAllGlRows();
 updateCompare();
+updateStickyOffsets();
 </script>
 </body>
 </html>
